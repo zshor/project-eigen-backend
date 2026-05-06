@@ -90,7 +90,7 @@ async def interact(req: InteractionRequest):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": req.message}
             ],
-            model="llama-3.1-70b-versatile",
+            model="llama3-70b-8192",
             response_format={"type": "json_object"},
             temperature=0.75
         )
