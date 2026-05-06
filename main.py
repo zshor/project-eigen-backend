@@ -12,7 +12,7 @@ app = FastAPI()
 # Enable CORS for the frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this to your Vercel URL
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,7 +70,7 @@ async def interact(req: InteractionRequest):
         engine_response = oracle_data.get("engine_response", "...")
 
         # 4. Save to the Limbic System (Supabase)
-        db_response = supabase.table("interactions").insert({
+        supabase.table("interactions").insert({
             "user_id": req.user_id,
             "message": req.message,
             "response": engine_response,
