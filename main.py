@@ -38,14 +38,24 @@ class InteractionRequest(BaseModel):
 async def interact(req: InteractionRequest):
     try:
         # 1. RETRIEVE PREVIOUS STATE (Limbic Memory)
-        prev_record = supabase.table("interactions") \
-            .select("valence", "arousal") \
-            .eq("user_id", req.user_id) \
-            .order("created_at", descending=True) \
-            .limit(1).execute()
-
-        prev_v = prev_record.data[0]['valence'] if prev_record.data else 0.0
-        prev_a = prev_record.data[0]['arousal'] if prev_record.data else 0.8
+        # Using desc=True to fix the keyword error
+        try:
+            prev_record = supabase.table("interactions") \
+                .select("valence", "arousal") \
+                .eq("user_id", req.user_id) \
+                .order("created_at", desc=True) \
+                .limit(1).execute()
+            
+            if prev_record.data and len(prev_record.data) > 0:
+                prev_v = float(prev_record.data[0]['valence'])
+                prev_a = float(prev_record.data[0]['arousal'])
+            else:
+                prev_v = 0.0
+                prev_a = 0.8
+        except Exception as fetch_error:
+            print(f"Supabase Fetch Error: {fetch_error}")
+            prev_v = 0.0
+            prev_a = 0.8
 
         # 2. APPLY DECAY (V_new = V_current * (1 - lambda))
         decayed_v = prev_v * (1 - DECAY_LAMBDA)
@@ -65,7 +75,7 @@ async def interact(req: InteractionRequest):
         Valence must be between -1.0 and 1.0. 
         -1.0 is extreme hostility, frustration, or despair.
         1.0 is extreme joy, alignment, or epiphany.
-        DO NOT play it safe. You must calculate extreme shifts based on user input."""
+        DO NOT play it safe. Calculate extreme shifts based on user input."""
 
         chat_completion = groq_client.chat.completions.create(
             messages=[
@@ -84,7 +94,7 @@ async def interact(req: InteractionRequest):
         raw_valence = float(oracle_data.get("system_state", {}).get("valence", 0.0))
         raw_arousal = float(oracle_data.get("system_state", {}).get("arousal", 0.8))
 
-        # Final Momentum calculation
+        # Final Momentum calculation (The EKV Synthesis)
         final_valence = (decayed_v + raw_valence) / 2
         final_arousal = (decayed_a + raw_arousal) / 2
         
@@ -112,5 +122,5 @@ async def interact(req: InteractionRequest):
         return oracle_data
 
     except Exception as e:
-        print(f"Error: {str(e)}")
+        print(f"Global Error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
