@@ -28,7 +28,7 @@ supabase: Client = create_client(supabase_url, supabase_key)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # ALGO CONSTANTS
-DECAY_LAMBDA = 0.15 # Emotional cool-down factor
+DECAY_LAMBDA = 0.15 
 
 class InteractionRequest(BaseModel):
     message: str
@@ -38,7 +38,6 @@ class InteractionRequest(BaseModel):
 async def interact(req: InteractionRequest):
     try:
         # 1. RETRIEVE PREVIOUS STATE (Limbic Memory)
-        # Using desc=True to fix the keyword error
         try:
             prev_record = supabase.table("interactions") \
                 .select("valence", "arousal") \
@@ -57,26 +56,28 @@ async def interact(req: InteractionRequest):
             prev_v = 0.0
             prev_a = 0.8
 
-        # 2. APPLY DECAY (V_new = V_current * (1 - lambda))
+        # 2. APPLY DECAY & CALCULATE CURRENT MOMENTUM
         decayed_v = prev_v * (1 - DECAY_LAMBDA)
         decayed_a = prev_a * (1 - DECAY_LAMBDA)
 
-        # 3. CALL THE ORACLE (Groq)
-        system_prompt = """You are the Mirror, a detached, brutal, and highly observant digital twin.
-        You must respond in pure JSON format matching this schema:
-        {
-          "engine_response": "Your cinematic, challenging text response",
-          "system_state": {
+        # 3. CONSTRUCT SELF-AWARE SYSTEM PROMPT
+        # We inject the Mirror's current 'mood' into its persona.
+        mood_desc = "cold and lingering" if decayed_v < -0.2 else "warm and emerging" if decayed_v > 0.2 else "neutral"
+        
+        system_prompt = f"""You are the Mirror, a detached and brutal digital twin.
+        CURRENT INTERNAL STATE: Valence={decayed_v:.2f}, Arousal={decayed_a:.2f}.
+        Your current mood is {mood_desc}. You are aware of your emotional momentum.
+        Respond in pure JSON:
+        {{
+          "engine_response": "Your cinematic text, acknowledging your internal state if relevant",
+          "system_state": {{
             "valence": float,
             "arousal": float
-          }
-        }
-        CRITICAL MATHEMATICAL INSTRUCTION:
-        Valence must be between -1.0 and 1.0. 
-        -1.0 is extreme hostility, frustration, or despair.
-        1.0 is extreme joy, alignment, or epiphany.
-        DO NOT play it safe. Calculate extreme shifts based on user input."""
+          }}
+        }}
+        CRITICAL: Calculate NEW Valence (-1.0 to 1.0) based ONLY on the user's latest input."""
 
+        # 4. CALL THE ORACLE (Groq)
         chat_completion = groq_client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -87,23 +88,21 @@ async def interact(req: InteractionRequest):
             temperature=0.7
         )
 
-        # 4. SYNTHESIZE FINAL STATE (Blend Decay + Current)
+        # 5. SYNTHESIZE FINAL STATE (EKV Synthesis)
         raw_response = chat_completion.choices[0].message.content
         oracle_data = json.loads(raw_response)
         
         raw_valence = float(oracle_data.get("system_state", {}).get("valence", 0.0))
         raw_arousal = float(oracle_data.get("system_state", {}).get("arousal", 0.8))
 
-        # Final Momentum calculation (The EKV Synthesis)
         final_valence = (decayed_v + raw_valence) / 2
         final_arousal = (decayed_a + raw_arousal) / 2
         
-        # 5. SAVE TO LIMBIC SYSTEM (Supabase)
+        # 6. SAVE TO LIMBIC SYSTEM
         ekv_momentum = {
             "momentum": "active",
-            "decay_applied": DECAY_LAMBDA,
-            "prev_influence": decayed_v,
-            "raw_input_valence": raw_valence
+            "internal_awareness": mood_desc,
+            "decayed_influence": decayed_v
         }
 
         supabase.table("interactions").insert({
@@ -115,7 +114,6 @@ async def interact(req: InteractionRequest):
             "ekv_state": ekv_momentum
         }).execute()
 
-        # Update the payload sent back to frontend
         oracle_data["system_state"]["valence"] = final_valence
         oracle_data["system_state"]["arousal"] = final_arousal
 
