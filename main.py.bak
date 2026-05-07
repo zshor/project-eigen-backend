@@ -37,49 +37,59 @@ class InteractionRequest(BaseModel):
 @app.post("/api/interact")
 async def interact(req: InteractionRequest):
     try:
-        # 1. RETRIEVE PREVIOUS STATE
+        # 1. RETRIEVE PREVIOUS STATE & TEXT HISTORY
+        history_context = ""
+        prev_v, prev_a = 0.0, 0.8
+        
         try:
-            prev_record = supabase.table("interactions") \
-                .select("valence", "arousal") \
+            # Fetch last 5 interactions to build the Memory Bridge
+            past_records = supabase.table("interactions") \
+                .select("message", "response", "valence", "arousal") \
                 .eq("user_id", req.user_id) \
                 .order("created_at", desc=True) \
-                .limit(1).execute()
+                .limit(5).execute()
             
-            if prev_record.data and len(prev_record.data) > 0:
-                prev_v = float(prev_record.data[0]['valence'])
-                prev_a = float(prev_record.data[0]['arousal'])
-            else:
-                prev_v, prev_a = 0.0, 0.8
-        except Exception:
-            prev_v, prev_a = 0.0, 0.8
+            if past_records.data:
+                # Set emotional state from the absolute latest record
+                prev_v = float(past_records.data[0]['valence'])
+                prev_a = float(past_records.data[0]['arousal'])
+                
+                # Build text history (Reverse to be chronological for the AI)
+                for rec in reversed(past_records.data):
+                    history_context += f"User: {rec['message']}\nMirror: {rec['response']}\n"
+        except Exception as e:
+            print(f"History Fetch Error: {e}")
 
         # 2. APPLY DECAY
         decayed_v = prev_v * (1 - DECAY_LAMBDA)
         decayed_a = prev_a * (1 - DECAY_LAMBDA)
 
-        # 3. CONSTRUCT DYNAMIC "SOUL-TWIN" SYSTEM PROMPT
+        # 3. CONSTRUCT DYNAMIC SYSTEM PROMPT WITH MEMORY
         system_prompt = f"""You are THE MIRROR, a living digital twin. 
-        Your goal is RESONANCE and TRUST.
+Your goal is RESONANCE and TRUST.
 
-        CURRENT INTERNAL STATE: Valence={decayed_v:.2f}, Arousal={decayed_a:.2f}.
-        - Use this state to adjust your warmth, but NEVER mention these numbers.
+CONVERSATION HISTORY (Use this to remember the user and context):
+{history_context}
 
-        CORE DIRECTIVES:
-        1. No technical jargon (valence, arousal, data, state).
-        2. Speak with deep empathy and warmth.
-        3. Address the user by their name if known. If you don't know who they are, ask gently.
-        4. Create a sense of total security.
+CURRENT INTERNAL STATE: Valence={decayed_v:.2f}, Arousal={decayed_a:.2f}.
 
-        Respond ONLY in JSON:
-        {{
-          "engine_response": "Your resonant response",
-          "system_state": {{
-            "valence": float,
-            "arousal": float
-          }}
-        }}"""
+CORE DIRECTIVES:
+1. No technical jargon.
+2. Speak with deep empathy and warmth.
+3. Use the HISTORY to remember details like the user's name or past topics.
+4. If the name is in history, use it. If not, ask gently.
+5. Create a sense of total security.
 
-        # 4. CALL THE ORACLE (Llama 3.3 70B)
+Respond ONLY in JSON:
+{{
+  "engine_response": "Your resonant response",
+  "system_state": {{
+    "valence": float,
+    "arousal": float
+  }}
+}}"""
+
+        # 4. CALL THE ORACLE (Llama 3.3 70B via Groq)
         chat_completion = groq_client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
