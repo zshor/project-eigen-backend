@@ -3,3 +3,5 @@ uvicorn
 pydantic
 supabase
 groq
+pywebpush
+schedule
