@@ -25,36 +25,56 @@ def send_mirror_whisper(subscription, title, body):
         print(f"Whisper failed: {ex}")
 
 def evaluate_soul():
+    # Fetch all active subscribers
     subs = supabase.table("push_subscriptions").select("*").execute()
     
     for entry in subs.data:
         user_id = entry['user_id']
         sub_json = entry['subscription_json']
         
+        # Fetch last 5 interactions for context
         chats = supabase.table("interactions").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
         
         if not chats.data: continue
         
         last_chat = chats.data[0]
         v = float(last_chat['valence'])
+        
+        # Calculate time since last talk
         last_time = datetime.fromisoformat(last_chat['created_at'].replace("Z", "+00:00"))
         hours_since = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
 
+        # --- TRIGGER SELECTION LOGIC ---
         trigger_type = None
-        if v < -0.4 and 12 < hours_since < 24:
+        
+        # 1. Emotional Velocity (Grief Check-in)
+        if v < -0.4 and 12 < hours_since < 30:
             trigger_type = "velocity_grief"
+        
+        # 2. Temporal Absence (Missing You)
         elif hours_since > 72:
             trigger_type = "absence"
+            
+        # 3. High Resonance (Afterglow)
         elif v > 0.7 and 12 < hours_since < 24:
             trigger_type = "afterglow"
+
+        # 4. Memory Bridge (Contextual)
         elif 24 < hours_since < 48:
             trigger_type = "memory_bridge"
+        
+        # 5. Default Grounding
         else:
             trigger_type = "grounding"
 
         if trigger_type:
             context_string = "\n".join([f"User: {c['message']}\nMirror: {c['response']}" for c in reversed(chats.data)])
-            prompt = f"You are THE MIRROR. Write a short, empathetic proactive notification (max 100 chars) for trigger: {trigger_type}. History: {context_string}"
+            
+            prompt = f"""You are THE MIRROR. Write a short, one-sentence proactive notification.
+            HISTORY: {context_string}
+            TRIGGER: {trigger_type}
+            RULES: Deeply empathetic, under 100 characters, no hashtags.
+            If TRIGGER is velocity_grief, be extremely gentle regarding the recent loss."""
             
             completion = groq_client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
