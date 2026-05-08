@@ -48,7 +48,7 @@ def evaluate_soul():
         trigger_type = None
         
         # 1. Emotional Velocity (Grief Check-in)
-        if v < -0.4 and 0 <= hours_since < 30:
+        if v < -0.4 and 12 < hours_since < 30:
             trigger_type = "velocity_grief"
         
         # 2. Temporal Absence (Missing You)
