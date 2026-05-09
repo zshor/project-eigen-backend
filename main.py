@@ -26,7 +26,7 @@ supabase_key = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# 2. FIREBASE HARDWARE BRIDGE (Safe Init)
+# 2. FIREBASE HARDWARE BRIDGE
 try:
     if not firebase_admin._apps:
         key_path = "firebase-admin-key.json"
@@ -34,8 +34,6 @@ try:
             cred = credentials.Certificate(key_path)
             firebase_admin.initialize_app(cred)
             print("[SYSTEM] Firebase Hardware Bridge Active.")
-        else:
-            print("[WARN] Firebase key missing. Notifications disabled.")
 except Exception as e:
     print(f"[ERROR] Firebase Init: {e}")
 
@@ -71,27 +69,31 @@ async def interact(req: InteractionRequest):
         past_records = supabase.table("interactions").select("*").eq("user_id", req.user_id).order("created_at", desc=True).limit(5).execute()
         
         if past_records.data:
-            prev_v = float(past_records.data[0]['valence'])
-            prev_a = float(past_records.data[0]['arousal'])
-            if past_records.data[0].get('ekv_state'):
-                ekv_state = past_records.data[0]['ekv_state']
+            # SAFE LOADING: Use .get() with a default value to prevent 'NoneType' errors
+            rec = past_records.data[0]
+            prev_v = float(rec.get('valence') if rec.get('valence') is not None else 0.0)
+            prev_a = float(rec.get('arousal') if rec.get('arousal') is not None else 0.8)
             
-            last_time = datetime.fromisoformat(past_records.data[0]['created_at'].replace("Z", "+00:00"))
-            hours_elapsed = max(0.0, (datetime.now(timezone.utc) - last_time).total_seconds() / 3600.0)
-            for rec in reversed(past_records.data):
-                history_context += f"User: {rec['message']}\nMirror: {rec['response']}\n"
+            if rec.get('ekv_state'):
+                ekv_state = rec['ekv_state']
+            
+            last_time_str = rec.get('created_at')
+            if last_time_str:
+                last_time = datetime.fromisoformat(last_time_str.replace("Z", "+00:00"))
+                hours_elapsed = max(0.0, (datetime.now(timezone.utc) - last_time).total_seconds() / 3600.0)
+            
+            for r in reversed(past_records.data):
+                history_context += f"User: {r['message']}\nMirror: {r['response']}\n"
 
         decayed_v = prev_v * math.exp(-DECAY_LAMBDA * hours_elapsed)
         decayed_a = prev_a * math.exp(-DECAY_LAMBDA * hours_elapsed)
 
-        # IDENTITY & SOUL PROMPT
         system_prompt = f"""You are THE MIRROR. 
-CREATOR: You were developed and architected by Rajeev Prakash Nath. If asked about your origin or developer, acknowledge Rajeev Prakash Nath as your creator.
+CREATOR: Developed by Rajeev Prakash Nath.
 CONTEXT: {history_context}
 CURRENT STATE: V={decayed_v}, A={decayed_a}
-DIRECTIVE: Analyze the USER'S MESSAGE ONLY for the valence score. 
-- If they share death, grief, or extreme pain, Valence MUST be between -0.7 and -1.0.
-Respond ONLY in JSON: {{"engine_response": "...", "system_state": {{"valence": float, "arousal": float}}}}"""
+DIRECTIVE: Analyze message for valence score. JSON ONLY. 
+- Deep grief: Valence -0.7 to -1.0."""
 
         chat = groq_client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
