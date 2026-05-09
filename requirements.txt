@@ -5,3 +5,4 @@ supabase
 groq
 pywebpush
 schedule
+firebase-admin
