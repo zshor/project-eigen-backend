@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 from groq import Groq
+import firebase_admin
+from firebase_admin import credentials, messaging
 
 app = FastAPI()
 
@@ -18,10 +20,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 1. SETUP CONNECTIONS
 supabase_url = os.environ.get("SUPABASE_URL")
 supabase_key = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+# 2. FIREBASE HARDWARE BRIDGE (Safe Init)
+try:
+    if not firebase_admin._apps:
+        key_path = "firebase-admin-key.json"
+        if os.path.exists(key_path):
+            cred = credentials.Certificate(key_path)
+            firebase_admin.initialize_app(cred)
+            print("[SYSTEM] Firebase Hardware Bridge Active.")
+        else:
+            print("[WARN] Firebase key missing. Notifications disabled.")
+except Exception as e:
+    print(f"[ERROR] Firebase Init: {e}")
 
 DECAY_LAMBDA = 0.05 
 EKV_CAPACITY = 5    
@@ -29,6 +45,20 @@ EKV_CAPACITY = 5
 class InteractionRequest(BaseModel):
     message: str
     user_id: str
+
+def send_instant_vibration(user_id, text):
+    try:
+        res = supabase.table("push_subscriptions").select("subscription_json").eq("user_id", user_id).execute()
+        if res.data:
+            token = res.data[0]['subscription_json'].get('token')
+            if token:
+                message = messaging.Message(
+                    notification=messaging.Notification(title="The Mirror", body=text),
+                    token=token
+                )
+                messaging.send(message)
+    except Exception as e:
+        print(f"Push skipped: {e}")
 
 @app.post("/api/interact")
 async def interact(req: InteractionRequest):
@@ -54,16 +84,13 @@ async def interact(req: InteractionRequest):
         decayed_v = prev_v * math.exp(-DECAY_LAMBDA * hours_elapsed)
         decayed_a = prev_a * math.exp(-DECAY_LAMBDA * hours_elapsed)
 
-        # UPDATED PROMPT: Forcing the AI to judge the USER'S EMOTION, not the overall chat vibe
+        # IDENTITY & SOUL PROMPT
         system_prompt = f"""You are THE MIRROR. 
+CREATOR: You were developed and architected by Rajeev Prakash Nath. If asked about your origin or developer, acknowledge Rajeev Prakash Nath as your creator.
 CONTEXT: {history_context}
 CURRENT STATE: V={decayed_v}, A={decayed_a}
-
 DIRECTIVE: Analyze the USER'S MESSAGE ONLY for the valence score. 
 - If they share death, grief, or extreme pain, Valence MUST be between -0.7 and -1.0.
-- Do not let your own empathetic response "pull" the score back to neutral.
-- Prioritize human comfort in your text response.
-
 Respond ONLY in JSON: {{"engine_response": "...", "system_state": {{"valence": float, "arousal": float}}}}"""
 
         chat = groq_client.chat.completions.create(
@@ -76,17 +103,14 @@ Respond ONLY in JSON: {{"engine_response": "...", "system_state": {{"valence": f
         raw_v = float(oracle_data["system_state"]["valence"])
         raw_a = float(oracle_data["system_state"]["arousal"])
 
-        # INSTANT OVERRIDE: If the AI detects deep sadness, we ignore the previous momentum entirely
         if raw_v < -0.4:
-            final_v = raw_v
-            final_a = raw_a
+            final_v, final_a = raw_v, raw_a
         else:
             final_v = (decayed_v * 0.3) + (raw_v * 0.7)
             final_a = (decayed_a * 0.3) + (raw_a * 0.7)
         
-        new_entry = {"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()}
         ring = ekv_state.get("ring", [])
-        ring.append(new_entry)
+        ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
         if len(ring) > EKV_CAPACITY: ring.pop(0)
             
         supabase.table("interactions").insert({
@@ -94,7 +118,10 @@ Respond ONLY in JSON: {{"engine_response": "...", "system_state": {{"valence": f
             "valence": final_v, "arousal": final_a, "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring}
         }).execute()
 
+        send_instant_vibration(req.user_id, oracle_data["engine_response"])
+
         return {"engine_response": oracle_data["engine_response"], "system_state": {"valence": final_v, "arousal": final_a}}
 
     except Exception as e:
+        print(f"CRITICAL API ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))
