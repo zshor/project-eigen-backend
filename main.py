@@ -69,19 +69,14 @@ async def interact(req: InteractionRequest):
         past_records = supabase.table("interactions").select("*").eq("user_id", req.user_id).order("created_at", desc=True).limit(5).execute()
         
         if past_records.data:
-            # SAFE LOADING: Use .get() with a default value to prevent 'NoneType' errors
             rec = past_records.data[0]
             prev_v = float(rec.get('valence') if rec.get('valence') is not None else 0.0)
             prev_a = float(rec.get('arousal') if rec.get('arousal') is not None else 0.8)
-            
-            if rec.get('ekv_state'):
-                ekv_state = rec['ekv_state']
-            
+            if rec.get('ekv_state'): ekv_state = rec['ekv_state']
             last_time_str = rec.get('created_at')
             if last_time_str:
                 last_time = datetime.fromisoformat(last_time_str.replace("Z", "+00:00"))
                 hours_elapsed = max(0.0, (datetime.now(timezone.utc) - last_time).total_seconds() / 3600.0)
-            
             for r in reversed(past_records.data):
                 history_context += f"User: {r['message']}\nMirror: {r['response']}\n"
 
@@ -92,8 +87,8 @@ async def interact(req: InteractionRequest):
 CREATOR: Developed by Rajeev Prakash Nath.
 CONTEXT: {history_context}
 CURRENT STATE: V={decayed_v}, A={decayed_a}
-DIRECTIVE: Analyze message for valence score. JSON ONLY. 
-- Deep grief: Valence -0.7 to -1.0."""
+DIRECTIVE: Analyze message for valence score.
+Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
         chat = groq_client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
@@ -102,8 +97,14 @@ DIRECTIVE: Analyze message for valence score. JSON ONLY.
         )
 
         oracle_data = json.loads(chat.choices[0].message.content)
-        raw_v = float(oracle_data["system_state"]["valence"])
-        raw_a = float(oracle_data["system_state"]["arousal"])
+        
+        # --- ROBUST PARSING (Fixes 'system_state' KeyError) ---
+        engine_res = oracle_data.get("engine_response", "I am reflecting on that.")
+        
+        # Look for valence/arousal inside system_state OR at top level
+        state = oracle_data.get("system_state", oracle_data) 
+        raw_v = float(state.get("valence", 0.0))
+        raw_a = float(state.get("arousal", 0.8))
 
         if raw_v < -0.4:
             final_v, final_a = raw_v, raw_a
@@ -116,13 +117,13 @@ DIRECTIVE: Analyze message for valence score. JSON ONLY.
         if len(ring) > EKV_CAPACITY: ring.pop(0)
             
         supabase.table("interactions").insert({
-            "user_id": req.user_id, "message": req.message, "response": oracle_data["engine_response"],
+            "user_id": req.user_id, "message": req.message, "response": engine_res,
             "valence": final_v, "arousal": final_a, "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring}
         }).execute()
 
-        send_instant_vibration(req.user_id, oracle_data["engine_response"])
+        send_instant_vibration(req.user_id, engine_res)
 
-        return {"engine_response": oracle_data["engine_response"], "system_state": {"valence": final_v, "arousal": final_a}}
+        return {"engine_response": engine_res, "system_state": {"valence": final_v, "arousal": final_a}}
 
     except Exception as e:
         print(f"CRITICAL API ERROR: {e}")
