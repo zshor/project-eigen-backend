@@ -53,13 +53,23 @@ def evaluate_soul():
         last_time = datetime.fromisoformat(last_chat['created_at'].replace("Z", "+00:00"))
         hours_since = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
 
-        # Trigger Logic
-        trigger_type = "grounding"
-        if v < -0.4 and 12 < hours_since < 30: trigger_type = "velocity_grief"
-        elif hours_since > 72: trigger_type = "absence"
+        # --- UPDATED STRICT TRIGGER LOGIC ---
+        trigger_type = None
         
+        if v < -0.4 and 12 < hours_since < 30: 
+            trigger_type = "velocity_grief"
+        elif hours_since > 72: 
+            trigger_type = "absence"
+        
+        # If no conditions are met, SKIP this user and DO NOT send a message.
+        # This protects your Groq API limits and prevents spamming the user.
+        if trigger_type is None:
+            print(f"Skipping user {user_id}: No trigger met (Hours: {hours_since:.1f}, Valence: {v:.2f})")
+            continue
+        # ------------------------------------
+
         prompt = f"You are THE MIRROR. One short, deep sentence for user. Trigger: {trigger_type}. History: {last_chat['message']}"
-        
+
         completion = groq_client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama-3.3-70b-versatile"
