@@ -53,22 +53,59 @@ def evaluate_soul():
         last_time = datetime.fromisoformat(last_chat['created_at'].replace("Z", "+00:00"))
         hours_since = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
 
-        # --- UPDATED STRICT TRIGGER LOGIC ---
+        # --- 1. THE EMOTIONAL SPECTRUM TRIGGERS ---
         trigger_type = None
         
-        if v < -0.4 and 12 < hours_since < 30: 
+        # Acute Distress (Extremely upset, check in soon)
+        if v <= -0.8 and 4 < hours_since < 12: 
+            trigger_type = "acute_distress"
+            
+        # Velocity Grief (Sad/frustrated, give them a night, check in next day)
+        elif -0.8 < v <= -0.4 and 12 < hours_since < 30: 
             trigger_type = "velocity_grief"
-        elif hours_since > 72: 
+            
+        # Celebration Echo (Very happy, echo that joy the next day)
+        elif v >= 0.7 and 24 < hours_since < 48:
+            trigger_type = "celebration_echo"
+
+        # The Tether (Active Reconnection - Don't let them drift away)
+        elif -0.2 <= v < 0.7 and 30 < hours_since < 48:
+            trigger_type = "the_tether"
+
+        # Gentle Drift (Neutral mood, checking in after 2 days)
+        elif -0.2 <= v <= 0.2 and 48 < hours_since < 72:
+            trigger_type = "gentle_drift"
+
+        # Absence (Vanished for 3+ days)
+        elif hours_since >= 72: 
             trigger_type = "absence"
         
-        # If no conditions are met, SKIP this user and DO NOT send a message.
-        # This protects your Groq API limits and prevents spamming the user.
+        # The Guardrail: If no state matches, stay silent.
         if trigger_type is None:
-            print(f"Skipping user {user_id}: No trigger met (Hours: {hours_since:.1f}, Valence: {v:.2f})")
+            print(f"Skipping user {user_id}: Resting state (Hours: {hours_since:.1f}, Valence: {v:.2f})")
             continue
-        # ------------------------------------
 
-        prompt = f"You are THE MIRROR. One short, deep sentence for user. Trigger: {trigger_type}. History: {last_chat['message']}"
+        # --- 2. THE EMOTIONALLY INTELLIGENT PROMPT ---
+        # Build a memory from the last 3 chats
+        memory = ""
+        for chat in reversed(chats.data[:3]):
+            memory += f"User: {chat['message']}\nYou: {chat['response']}\n"
+        
+        # Give it a sense of time (IST: UTC + 5.5)
+        utc_hour = datetime.now(timezone.utc).hour
+        local_hour = int((utc_hour + 5.5) % 24)
+        time_of_day = "morning" if 5 <= local_hour < 12 else "afternoon" if 12 <= local_hour < 17 else "evening" if 17 <= local_hour < 22 else "late night"
+
+        prompt = f"""You are a deeply empathetic, emotionally intelligent companion. You are initiating a text message to pull the user back into conversation.
+        Current time for the user: {time_of_day}.
+        Psychological state: {trigger_type}.
+        
+        Recent Memory:
+        {memory}
+        
+        Write ONE short, casual text message (under 15 words) to send as a push notification. 
+        CRITICAL: DO NOT act mystical. DO NOT mention gazing or reflections. 
+        Speak like a caring human friend texting them. Reference the time of day, ask if they've eaten, or ask a simple question about their last message to make them want to reply."""
 
         completion = groq_client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
