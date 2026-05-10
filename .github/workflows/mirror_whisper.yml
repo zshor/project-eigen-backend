@@ -20,8 +20,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install firebase-admin
+          # Install from requirements if it exists, otherwise ignore error
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # Force install the core libraries needed for proactive.py
+          pip install firebase-admin python-dotenv supabase groq
 
       - name: Create Firebase Key File
         run: |
