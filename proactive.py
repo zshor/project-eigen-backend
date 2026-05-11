@@ -16,6 +16,7 @@ supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get(
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 try:
+    # On Render, this file is provided via "Secret Files"
     if not firebase_admin._apps:
         key_path = "firebase-admin-key.json"
         if os.path.exists(key_path):
@@ -35,7 +36,12 @@ def send_native_push(token, title, body):
     except Exception as e:
         print(f"[PUSH ERROR] {e}")
 
+# --- THE AGGRESSIVE DYNAMIC ALGORITHM ---
 def calculate_dynamic_delay(user_message_count_24h):
+    """
+    Designed to compete with high-frequency apps.
+    Active user (>10 msgs) = Waits ~15 mins.
+    """
     if user_message_count_24h > 10:
         return 0.25  # 15 minutes
     if user_message_count_24h > 0:
@@ -74,30 +80,39 @@ def evaluate_soul():
         whisper = None
 
         # =================================================================
-        # 1. PRIMARY INTERCEPT: GOSSIP (Mood-Independent)
+        # 1. PRIMARY INTERCEPT: GOSSIP (MOOD-INDEPENDENT)
         # =================================================================
+        is_gossip_mode = False
         if engine_active and hours_since > dynamic_threshold:
-            cog_state_res = supabase.table("user_cognitive_state").select("*").eq("user_id", user_id).execute()
-            if cog_state_res.data and cog_state_res.data[0].get("current_mode") == "SOCRATIC_GOSSIP":
-                print(f"  -> [ACTION] Triggering Gossip Catalyst!")
-                whisper = execute_catalyst_event(supabase, user_id)
-                if whisper:
-                    trigger_type = "socratic_gossip"
+            try:
+                cog_state_res = supabase.table("user_cognitive_state").select("*").eq("user_id", user_id).execute()
+                if cog_state_res.data:
+                    cog_state = cog_state_res.data[0]
+                    if cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
+                        is_gossip_mode = True
+                        print(f"  -> [ACTION] Attempting Socratic Gossip Hijack...")
+                        whisper = execute_catalyst_event(supabase, user_id)
+                        if whisper:
+                            trigger_type = "socratic_gossip"
+            except Exception as e:
+                print(f"  -> [WARNING] Gossip Engine failed: {e}")
 
         # =================================================================
-        # 2. SECONDARY: EMOTIONAL FALLBACKS (If Gossip didn't fire)
+        # 2. SECONDARY: EMOTIONAL FALLBACKS (ONLY IF NOT IN GOSSIP MODE)
         # =================================================================
-        if not trigger_type and hours_since > dynamic_threshold:
+        if not trigger_type and hours_since > dynamic_threshold and not is_gossip_mode:
             if v <= -0.8:
                 trigger_type = "acute_distress"
             elif v >= 0.7:
-                # If you're happy, it will tether you back after the wait
                 trigger_type = "celebration_echo"
             elif -0.2 <= v < 0.7:
                 trigger_type = "the_tether"
+            elif hours_since >= 72:
+                trigger_type = "absence"
 
         if trigger_type is None:
-            print(f"  -> Resting state. No triggers hit.")
+            status = "In Gossip Mode - Scraper likely returned empty" if is_gossip_mode else "Resting state"
+            print(f"  -> {status}. No triggers hit.")
             continue
 
         # =================================================================
@@ -108,12 +123,21 @@ def evaluate_soul():
             for chat in reversed(chats.data[:3]):
                 memory += f"User: {chat['message']}\nYou: {chat['response']}\n"
             
-            prompt = f"User is in state: {trigger_type}. Recent context: {memory}. Write a short (15 word) casual text to check in. No robot speak."
+            prompt = f"User is in state: {trigger_type}. Memory: {memory}. Write a 10-word casual text to check in. Be a friend, not a bot."
             completion = groq_client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama-3.3-70b-versatile")
             whisper = completion.choices[0].message.content.strip().replace('"', '')
 
         print(f"  -> [{trigger_type.upper()}] Pushing: {whisper}")
-        supabase.table("interactions").insert({"user_id": user_id, "message": f"[{trigger_type}]", "response": whisper, "valence": v}).execute()
+        
+        # Log interaction to DB
+        supabase.table("interactions").insert({
+            "user_id": user_id, 
+            "message": f"[{trigger_type}]", 
+            "response": whisper, 
+            "valence": v
+        }).execute()
+        
+        # Fire Push
         send_native_push(target_token, "The Mirror", whisper)
 
 if __name__ == "__main__":
