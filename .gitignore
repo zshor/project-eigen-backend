@@ -1,0 +1,13 @@
+# Environments
+venv/
+env/
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+firebase-admin-key.json
+firebase-admin-key.json:Zone.Identifier
+*.bak

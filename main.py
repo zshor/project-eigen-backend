@@ -10,11 +10,16 @@ from groq import Groq
 import firebase_admin
 from firebase_admin import credentials, messaging
 
+# --- GOSSIP ENGINE IMPORTS ---
+import threading
+from gossip_engine import execute_catalyst_event
+from cognitive_observer import update_cognitive_ledger
+
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,8 +42,8 @@ try:
 except Exception as e:
     print(f"[ERROR] Firebase Init: {e}")
 
-DECAY_LAMBDA = 0.05 
-EKV_CAPACITY = 5    
+DECAY_LAMBDA = 0.05
+EKV_CAPACITY = 5
 
 class InteractionRequest(BaseModel):
     message: str
@@ -61,13 +66,47 @@ def send_instant_vibration(user_id, text):
 @app.post("/api/interact")
 async def interact(req: InteractionRequest):
     try:
+        # =================================================================
+        # THE CIRCUIT BREAKER & INTENT ROUTING
+        # =================================================================
+        engine_active = os.getenv("ENABLE_GOSSIP_ENGINE", "False").lower() == "true"
+        
+        if engine_active:
+            try:
+                cog_state_res = supabase.table("user_cognitive_state").select("*").eq("user_id", req.user_id).execute()
+                if cog_state_res.data:
+                    cog_state = cog_state_res.data[0]
+                    
+                    # If they asked for gossip OR the background script primed them
+                    if cog_state.get("user_wants_gossip") == True or cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
+                        print("[GOSSIP ENGINE] Intent Route Triggered!")
+                        
+                        gossip_response = execute_catalyst_event(supabase, req.user_id)
+                        
+                        if gossip_response:
+                            # Save the gossip text to chat history so it shows on the UI!
+                            supabase.table("interactions").insert({
+                                "user_id": req.user_id, "message": req.message, "response": gossip_response,
+                                "valence": 0.6, "arousal": 0.8, "ekv_state": {"capacity": EKV_CAPACITY, "ring": []}
+                            }).execute()
+                            
+                            send_instant_vibration(req.user_id, gossip_response)
+                            return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
+            
+            except Exception as e:
+                print(f"[ERROR] Engine routing failed safely: {e}")
+                pass # If the engine fails, just fall through to normal chat!
+        # =================================================================
+
+
+        # NORMAL CORE CHAT CONTINUES BELOW...
         history_context = ""
         prev_v, prev_a = 0.0, 0.8
         hours_elapsed = 0.0
         ekv_state = {"capacity": EKV_CAPACITY, "ring": [], "metrics": {"volatility": 0.0, "velocity": 0.0, "baseline_v": 0.0}}
-        
+
         past_records = supabase.table("interactions").select("*").eq("user_id", req.user_id).order("created_at", desc=True).limit(5).execute()
-        
+
         if past_records.data:
             rec = past_records.data[0]
             prev_v = float(rec.get('valence') if rec.get('valence') is not None else 0.0)
@@ -83,7 +122,7 @@ async def interact(req: InteractionRequest):
         decayed_v = prev_v * math.exp(-DECAY_LAMBDA * hours_elapsed)
         decayed_a = prev_a * math.exp(-DECAY_LAMBDA * hours_elapsed)
 
-        system_prompt = f"""You are THE MIRROR. 
+        system_prompt = f"""You are THE MIRROR.
 CREATOR: Developed by Rajeev Prakash Nath.
 CONTEXT: {history_context}
 CURRENT STATE: V={decayed_v}, A={decayed_a}
@@ -97,12 +136,10 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
         )
 
         oracle_data = json.loads(chat.choices[0].message.content)
-        
-        # --- ROBUST PARSING (Fixes 'system_state' KeyError) ---
+
         engine_res = oracle_data.get("engine_response", "I am reflecting on that.")
-        
-        # Look for valence/arousal inside system_state OR at top level
-        state = oracle_data.get("system_state", oracle_data) 
+
+        state = oracle_data.get("system_state", oracle_data)
         raw_v = float(state.get("valence", 0.0))
         raw_a = float(state.get("arousal", 0.8))
 
@@ -111,17 +148,24 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
         else:
             final_v = (decayed_v * 0.3) + (raw_v * 0.7)
             final_a = (decayed_a * 0.3) + (raw_a * 0.7)
-        
+
         ring = ekv_state.get("ring", [])
         ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
         if len(ring) > EKV_CAPACITY: ring.pop(0)
-            
+
         supabase.table("interactions").insert({
             "user_id": req.user_id, "message": req.message, "response": engine_res,
             "valence": final_v, "arousal": final_a, "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring}
         }).execute()
 
         send_instant_vibration(req.user_id, engine_res)
+
+        # =================================================================
+        # THE SILENT OBSERVER
+        # Run the cognitive matrix update in the background, so the user gets their reply instantly!
+        if engine_active:
+            threading.Thread(target=update_cognitive_ledger, args=(supabase, req.user_id, req.message)).start()
+        # =================================================================
 
         return {"engine_response": engine_res, "system_state": {"valence": final_v, "arousal": final_a}}
 
