@@ -124,31 +124,38 @@ async def interact(req: InteractionRequest):
                     return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
 
         # =================================================================
-        # 3. UNIFIED BULLETPROOF ROUTING (Llama 3.3 for ALL modes)
+        # 3. UNIFIED BULLETPROOF ROUTING
         # =================================================================
         if manual_on:
             print("[ROUTING] Gossip ON -> Scraping Web via internal DDGS")
-            web_data = fetch_web_currency(req.message) or "No live data found."
+            web_data = fetch_web_currency(req.message) or "No live news found."
             
-            system_prompt = f"""You are THE MIRROR.
-CREATOR: Developed by Rajeev Prakash Nath.
-CONTEXT: {history_context}
-LIVE WEB DATA: {web_data}
+            # THE FIX: Explicitly tell the model to use the history context to resolve ambiguity!
+            system_prompt = f"""You are THE MIRROR. 
+CREATOR: Rajeev Prakash Nath.
 
-DIRECTIVE: Answer the user's query using the LIVE WEB DATA provided above. Keep it casual, factual, and under 50 words.
+CONVERSATION HISTORY (Use this to understand context/pronouns like 'yesterday' or 'who'):
+{history_context}
+
+LIVE WEB DATA (Use this for factual research):
+{web_data}
+
+DIRECTIVE: 
+1. Use history to figure out what topic the user is talking about.
+2. Use Web Data to provide factual info.
+3. If history mentions IPL and user asks 'Who won yesterday?', look for IPL results in Web Data.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
         else:
             print("[ROUTING] Gossip OFF -> Llama Reflection Mode")
             system_prompt = f"""You are THE MIRROR.
-CREATOR: Developed by Rajeev Prakash Nath.
+CREATOR: Rajeev Prakash Nath.
 CONTEXT: {history_context}
 CURRENT STATE: V={decayed_v}, A={decayed_a}
 
-DIRECTIVE: Reflect the user's thoughts back to them. Do not use lists. Focus on psychology. Keep it casual, under 50 words.
+DIRECTIVE: Reflect user thoughts. Casual, no lists, under 50 words.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
-        # We use the rock-solid Llama 3.3 model for BOTH requests. No 413 errors.
         chat = groq_client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt}, 
@@ -161,22 +168,15 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
         
         oracle_data = json.loads(chat.choices[0].message.content)
         engine_res = oracle_data.get("engine_response", "I am reflecting.")
-        
         state = oracle_data.get("system_state", oracle_data)
-        raw_v = float(state.get("valence", 0.0))
-        raw_a = float(state.get("arousal", 0.8))
+        raw_v, raw_a = float(state.get("valence", 0.0)), float(state.get("arousal", 0.8))
 
-        # =================================================================
         # VALENCE LOGIC
-        # =================================================================
-        if raw_v < -0.4:
-            final_v, final_a = raw_v, raw_a
-        else:
-            final_v = (decayed_v * 0.3) + (raw_v * 0.7)
-            final_a = (decayed_a * 0.3) + (raw_a * 0.7)
+        final_v = raw_v if raw_v < -0.4 else (decayed_v * 0.3) + (raw_v * 0.7)
+        final_a = (decayed_a * 0.3) + (raw_a * 0.7)
 
         # =================================================================
-        # 4. SAVE STATE & BACKGROUND TASKS
+        # 4. SAVE STATE
         # =================================================================
         ring = ekv_state.get("ring", [])
         ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
@@ -184,11 +184,10 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
 
         supabase.table("interactions").insert({
             "user_id": req.user_id, "message": req.message, "response": engine_res,
-            "valence": final_v, "arousal": final_a, "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring, "metrics": ekv_state.get("metrics", {})}
+            "valence": final_v, "arousal": final_a, "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring}
         }).execute()
 
         send_instant_vibration(req.user_id, engine_res)
-
         if engine_active:
             threading.Thread(target=update_cognitive_ledger, args=(supabase, req.user_id, req.message)).start()
 
