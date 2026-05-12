@@ -11,6 +11,7 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 import threading
 
+# --- CORE ENGINE IMPORTS ---
 from gossip_engine import execute_catalyst_event, fetch_web_currency
 from cognitive_observer import update_cognitive_ledger
 
@@ -24,7 +25,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 1. SETUP
+# 1. CONNECTIONS
 supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
@@ -34,9 +35,11 @@ try:
         if os.path.exists(key_path):
             cred = credentials.Certificate(key_path)
             firebase_admin.initialize_app(cred)
+            print("[SYSTEM] Firebase Hardware Bridge Active.")
 except Exception as e:
-    print(f"Firebase Init: {e}")
+    print(f"[ERROR] Firebase Init: {e}")
 
+# EMOTIONAL PARAMETERS
 DECAY_LAMBDA = 0.05
 EKV_CAPACITY = 5
 
@@ -56,13 +59,17 @@ def send_instant_vibration(user_id, text):
                     token=token
                 )
                 messaging.send(message)
-    except Exception as e: print(f"Push skipped: {e}")
+    except: pass
 
 @app.post("/api/interact")
 async def interact(req: InteractionRequest):
     try:
-        # --- MASTER SYNC ---
+        # =================================================================
+        # 1. MASTER ALIGNMENT & STATE RETRIEVAL
+        # =================================================================
         manual_on = req.gossip_mode
+        
+        # PERSISTENT SYNC (Ensures all engines see the same mode)
         supabase.table("user_cognitive_state").upsert({
             "user_id": req.user_id,
             "manual_gossip_toggle": manual_on,
@@ -74,49 +81,61 @@ async def interact(req: InteractionRequest):
         cog_state = cog_res.data[0] if cog_res.data else {}
         engine_active = os.getenv("ENABLE_GOSSIP_ENGINE", "False").lower() == "true"
 
-        # --- HISTORY & EMOTION ---
+        # HISTORY & EMOTION STATE
         past_records = supabase.table("interactions").select("*").eq("user_id", req.user_id).order("created_at", desc=True).limit(5).execute()
         history_context = ""
         prev_v, prev_a = 0.0, 0.8
         hours_elapsed = 0.0
-        ekv_state = {"capacity": EKV_CAPACITY, "ring": []}
+        # Initialize EKV with metrics
+        ekv_state = {"capacity": EKV_CAPACITY, "ring": [], "metrics": {"volatility": 0.0, "velocity": 0.0, "baseline_v": 0.0}}
 
         if past_records.data:
             rec = past_records.data[0]
-            prev_v = float(rec.get('valence', 0.0))
-            prev_a = float(rec.get('arousal', 0.8))
-            ekv_state = rec.get('ekv_state', ekv_state)
+            prev_v = float(rec.get('valence') if rec.get('valence') is not None else 0.0)
+            prev_a = float(rec.get('arousal') if rec.get('arousal') is not None else 0.8)
+            if rec.get('ekv_state'): ekv_state = rec['ekv_state']
+            
             last_time = datetime.fromisoformat(rec['created_at'].replace("Z", "+00:00"))
             hours_elapsed = max(0.0, (datetime.now(timezone.utc) - last_time).total_seconds() / 3600.0)
             for r in reversed(past_records.data):
                 history_context += f"User: {r['message']}\nMirror: {r['response']}\n"
 
+        # EMOTIONAL DECAY
         decayed_v = prev_v * math.exp(-DECAY_LAMBDA * hours_elapsed)
         decayed_a = prev_a * math.exp(-DECAY_LAMBDA * hours_elapsed)
 
-        # --- PROACTIVE ---
+        # =================================================================
+        # 2. PROACTIVE HIJACK (Background trigger)
+        # =================================================================
         if engine_active and not manual_on:
             if cog_state.get("user_wants_gossip") or cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
-                g_res = execute_catalyst_event(supabase, req.user_id)
-                if g_res:
+                print("[GOSSIP ENGINE] Triggered Hijack")
+                gossip_response = execute_catalyst_event(supabase, req.user_id)
+                if gossip_response:
                     supabase.table("interactions").insert({
-                        "user_id": req.user_id, "message": req.message, "response": g_res,
+                        "user_id": req.user_id, "message": req.message, "response": gossip_response,
                         "valence": 0.6, "arousal": 0.8, "ekv_state": {"capacity": EKV_CAPACITY, "ring": []}
                     }).execute()
-                    send_instant_vibration(req.user_id, g_res)
-                    return {"engine_response": g_res, "system_state": {"valence": 0.6, "arousal": 0.8}}
+                    send_instant_vibration(req.user_id, gossip_response)
+                    return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
 
-        # --- UNIFIED ROUTING ---
+        # =================================================================
+        # 3. UNIFIED ROUTING (TAVILY SEARCH + GROQ)
+        # =================================================================
         web_context = ""
         if manual_on:
-            web_context = fetch_web_currency(req.message) or "No live data found."
+            print(f"[SYSTEM] Researching: {req.message}")
+            web_context = fetch_web_currency(req.message) or "No live news found for this query."
 
-        system_prompt = f"""
-        You are THE MIRROR. CONTEXT: {history_context}
-        CURRENT STATE: V={decayed_v}, A={decayed_a}
-        {"WEB RESEARCH DATA: " + web_context if manual_on else ""}
-        Respond ONLY in JSON: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}
-        """
+        system_prompt = f"""You are THE MIRROR.
+CREATOR: Developed by Rajeev Prakash Nath.
+CONTEXT: {history_context}
+CURRENT STATE: V={decayed_v}, A={decayed_a}
+
+{ "### GROUND TRUTH WEB DATA ###\n" + web_context if manual_on else "" }
+
+DIRECTIVE: Analyze message for valence score. Use the Web Data if present.
+Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
         chat = groq_client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
@@ -125,29 +144,38 @@ async def interact(req: InteractionRequest):
         )
         
         oracle_data = json.loads(chat.choices[0].message.content)
-        engine_res = oracle_data.get("engine_response", "Reflecting...")
-        state = oracle_data.get("system_state", {"valence": 0.0, "arousal": 0.8})
+        engine_res = oracle_data.get("engine_response", "I am reflecting.")
         
-        raw_v, raw_a = float(state.get("valence", 0.0)), float(state.get("arousal", 0.8))
-        final_v = (decayed_v * 0.3) + (raw_v * 0.7)
-        final_a = (decayed_a * 0.3) + (raw_a * 0.7)
+        state = oracle_data.get("system_state", oracle_data)
+        raw_v = float(state.get("valence", 0.0))
+        raw_a = float(state.get("arousal", 0.8))
 
-        # --- SAVE & OBSERVE ---
+        # RESTORING THE CORE VALENCE LOGIC (Negative Priority)
+        if raw_v < -0.4:
+            final_v, final_a = raw_v, raw_a
+        else:
+            final_v = (decayed_v * 0.3) + (raw_v * 0.7)
+            final_a = (decayed_a * 0.3) + (raw_a * 0.7)
+
+        # =================================================================
+        # 4. SAVE STATE & BACKGROUND TASKS
+        # =================================================================
         ring = ekv_state.get("ring", [])
         ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
         if len(ring) > EKV_CAPACITY: ring.pop(0)
 
         supabase.table("interactions").insert({
             "user_id": req.user_id, "message": req.message, "response": engine_res,
-            "valence": final_v, "arousal": final_a, "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring}
+            "valence": final_v, "arousal": final_a, "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring, "metrics": ekv_state.get("metrics", {})}
         }).execute()
 
         send_instant_vibration(req.user_id, engine_res)
+
         if engine_active:
             threading.Thread(target=update_cognitive_ledger, args=(supabase, req.user_id, req.message)).start()
 
         return {"engine_response": engine_res, "system_state": {"valence": final_v, "arousal": final_a}}
 
     except Exception as e:
-        print(f"ERROR: {e}")
+        print(f"CRITICAL API ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))
