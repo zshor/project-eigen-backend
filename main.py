@@ -11,8 +11,9 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 import threading
 
-# --- GOOGLE GEMINI IMPORT ---
-import google.generativeai as genai
+# --- NEW: GOOGLE GENAI IMPORT ---
+from google import genai
+from google.genai import types
 
 # --- GOSSIP ENGINE IMPORTS ---
 from gossip_engine import execute_catalyst_event
@@ -34,11 +35,12 @@ supabase_key = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# --- GEMINI SETUP ---
+# --- NEW SDK GEMINI SETUP ---
 gemini_api_key = os.environ.get("GEMINI_API_KEY")
+gemini_client = None
 if gemini_api_key:
-    genai.configure(api_key=gemini_api_key)
-    print("[SYSTEM] Gemini AI (Web Search) Active.")
+    gemini_client = genai.Client(api_key=gemini_api_key)
+    print("[SYSTEM] Gemini AI (Web Search) Active via google-genai.")
 else:
     print("[WARNING] GEMINI_API_KEY not found in environment.")
 
@@ -136,23 +138,27 @@ async def interact(req: InteractionRequest):
         final_v, final_a = decayed_v, decayed_a
 
         # --- BRANCH A: GOSSIP MODE (GEMINI WEB SEARCH) ---
-        if manual_gossip_mode and gemini_api_key:
+        if manual_gossip_mode and gemini_client:
             print("[SYSTEM] Routing to Gemini (Search Grounded)")
             try:
-                model = genai.GenerativeModel('gemini-1.5-flash', tools='google_search_retrieval')
                 sys_instruct = "You are THE MIRROR in GOSSIP/RESEARCH mode. Use Google Search to find the latest real-time data to answer the user."
                 
-                chat_response = model.generate_content(f"{sys_instruct}\n\nUser: {req.message}")
+                # New SDK syntax for Search Grounding
+                chat_response = gemini_client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=f"{sys_instruct}\n\nUser: {req.message}",
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())]
+                    )
+                )
                 engine_res = chat_response.text
-                
-                # Artificially bump arousal slightly because research is active/stimulating
                 final_a = min(1.0, decayed_a + 0.2) 
             except Exception as e:
                 print(f"[ERROR] Gemini search failed: {e}. Falling back to Groq.")
-                manual_gossip_mode = False # Force fallback if Google API fails
+                manual_gossip_mode = False 
 
         # --- BRANCH B: NORMAL CHAT (GROQ) ---
-        if not manual_gossip_mode or not gemini_api_key:
+        if not manual_gossip_mode or not gemini_client:
             print("[SYSTEM] Routing to Groq (Normal Chat)")
             system_prompt = f"""You are THE MIRROR.
 CREATOR: Developed by Rajeev Prakash Nath.
