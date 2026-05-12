@@ -1,18 +1,20 @@
 import os
 from groq import Groq
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 def fetch_web_currency(query):
     """
-    FREE BACKGROUND SCRAPER (DDGS):
-    Returns clean text instantly. Zero API keys.
+    STABLE SEARCH (DDGS):
+    Uses the latest renamed package for reliable scraping.
     """
-    print(f"[SYSTEM] Scraping free background news for: {query}")
+    print(f"[SYSTEM] Scraping live news for: {query}")
     try:
-        results = DDGS().text(query, max_results=3)
-        return "\n".join([r['body'] for r in results]) if results else None
+        # The new package uses a context manager for better stability
+        with DDGS() as ddgs:
+            results = [r for r in ddgs.text(query, max_results=3)]
+            return "\n".join([r['body'] for r in results]) if results else None
     except Exception as e:
         print(f"[DDG FAIL] {e}")
         return None
