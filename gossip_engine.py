@@ -61,6 +61,9 @@ def execute_catalyst_event(supabase_client, user_id):
         user_data = supabase_client.table("user_cognitive_state").select("*").eq("user_id", user_id).execute().data[0]
         interest_matrix = user_data.get("interest_matrix", {})
         mutated_prompt = user_data.get("mutated_prompt", "Find out what they are currently working on.")
+        
+        # --- FIX: PROTECT THE MANUAL TOGGLE ---
+        manual_toggle = user_data.get("manual_gossip_toggle", False)
 
         top_interest = extract_top_interest(interest_matrix)
         web_snippet = fetch_web_currency(top_interest)
@@ -70,11 +73,12 @@ def execute_catalyst_event(supabase_client, user_id):
 
         gossip_message = generate_gossip_catalyst(top_interest, web_snippet, mutated_prompt)
 
-        # Reset the mode back to normal
-        supabase_client.table("user_cognitive_state").update({
-            "current_mode": "NORMAL_CHAT",
-            "user_wants_gossip": False
-        }).eq("user_id", user_id).execute()
+        # Only reset the mode back to normal IF the user is NOT manually researching.
+        if not manual_toggle:
+            supabase_client.table("user_cognitive_state").update({
+                "current_mode": "NORMAL_CHAT",
+                "user_wants_gossip": False
+            }).eq("user_id", user_id).execute()
 
         return gossip_message
     except Exception as e:

@@ -11,7 +11,7 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 import threading
 
-# --- GOOGLE GENAI IMPORT ---
+# --- GOOGLE GENAI SDK ---
 from google import genai
 from google.genai import types
 
@@ -35,14 +35,12 @@ supabase_key = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# --- NEW SDK GEMINI SETUP ---
+# --- GEMINI SDK SETUP ---
 gemini_api_key = os.environ.get("GEMINI_API_KEY")
 gemini_client = None
 if gemini_api_key:
     gemini_client = genai.Client(api_key=gemini_api_key)
-    print("[SYSTEM] Gemini AI (Web Search) Active via google-genai.")
-else:
-    print("[WARNING] GEMINI_API_KEY not found in environment.")
+    print("[SYSTEM] Gemini AI (Web Search) Active.")
 
 # 2. FIREBASE HARDWARE BRIDGE
 try:
@@ -61,7 +59,7 @@ EKV_CAPACITY = 5
 class InteractionRequest(BaseModel):
     message: str
     user_id: str
-    gossip_mode: bool = False # Accepts toggle state from Frontend
+    gossip_mode: bool = False 
 
 def send_instant_vibration(user_id, text):
     try:
@@ -81,22 +79,24 @@ def send_instant_vibration(user_id, text):
 async def interact(req: InteractionRequest):
     try:
         # =================================================================
-        # 1. FETCH COGNITIVE STATE & MASTER ALIGNMENT
+        # 1. MASTER ALIGNMENT SYNC (UPSERT)
         # =================================================================
-        manual_gossip_mode = req.gossip_mode
+        manual_on = req.gossip_mode
         
-        # ALIGNMENT: Force all gossip columns to match the manual toggle state
-        db_update_payload = {
-            "manual_gossip_toggle": manual_gossip_mode,
-            "current_mode": "SOCRATIC_GOSSIP" if manual_gossip_mode else "NORMAL_CHAT",
-            "user_wants_gossip": manual_gossip_mode
+        # We force the database to match the UI button state immediately
+        db_sync_payload = {
+            "user_id": req.user_id,
+            "manual_gossip_toggle": manual_on,
+            "current_mode": "SOCRATIC_GOSSIP" if manual_on else "NORMAL_CHAT",
+            "user_wants_gossip": manual_on
         }
-
+        
         try:
-            supabase.table("user_cognitive_state").update(db_update_payload).eq("user_id", req.user_id).execute()
+            supabase.table("user_cognitive_state").upsert(db_sync_payload, on_conflict="user_id").execute()
         except Exception as sync_err:
-            print(f"[DB SYNC] Backend bypass update: {sync_err}")
+            print(f"[DB SYNC ERROR] {sync_err}")
 
+        # Fetch current state after sync
         cog_state = {}
         cog_state_res = supabase.table("user_cognitive_state").select("*").eq("user_id", req.user_id).execute()
         if cog_state_res.data:
@@ -104,6 +104,7 @@ async def interact(req: InteractionRequest):
             
         engine_active = os.getenv("ENABLE_GOSSIP_ENGINE", "False").lower() == "true"
 
+        # History and Memory
         history_context = ""
         prev_v, prev_a = 0.0, 0.8
         hours_elapsed = 0.0
@@ -127,12 +128,12 @@ async def interact(req: InteractionRequest):
         decayed_a = prev_a * math.exp(-DECAY_LAMBDA * hours_elapsed)
 
         # =================================================================
-        # 2. PROACTIVE HIJACK (Background trigger)
+        # 2. PROACTIVE HIJACK (Only if manual toggle is OFF)
         # =================================================================
-        if engine_active and not manual_gossip_mode:
+        if engine_active and not manual_on:
             try:
                 if cog_state.get("user_wants_gossip") == True or cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
-                    print("[GOSSIP ENGINE] Intent Route Triggered!")
+                    print("[GOSSIP ENGINE] Proactive Trigger Active")
                     gossip_response = execute_catalyst_event(supabase, req.user_id)
                     if gossip_response:
                         supabase.table("interactions").insert({
@@ -142,40 +143,36 @@ async def interact(req: InteractionRequest):
                         send_instant_vibration(req.user_id, gossip_response)
                         return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
             except Exception as e:
-                print(f"[ERROR] Engine routing failed safely: {e}")
-
+                print(f"[ERROR] Engine routing failed: {e}")
 
         # =================================================================
-        # 3. CORE ROUTING (GEMINI vs GROQ)
+        # 3. CORE ROUTING (GEMINI SEARCH vs GROQ)
         # =================================================================
         engine_res = ""
         final_v, final_a = decayed_v, decayed_a
 
-        if manual_gossip_mode and gemini_client:
-            print("[SYSTEM] Routing to Gemini (Search Grounded)")
+        # Branch A: GOSSIP/RESEARCH MODE
+        if manual_on and gemini_client:
+            print("[SYSTEM] Routing to Gemini 2.0 (Live Search)")
             try:
-                sys_instruct = f"You are THE MIRROR in GOSSIP/RESEARCH mode. Use Google Search to find data.\n\nPAST CONTEXT:\n{history_context}"
+                sys_instruct = f"You are THE MIRROR in GOSSIP mode. Use Search for real-time data.\n\nPAST CONTEXT:\n{history_context}"
                 chat_response = gemini_client.models.generate_content(
                     model='gemini-2.0-flash',
                     contents=f"{sys_instruct}\n\nCURRENT MESSAGE: {req.message}",
-                    config=types.GenerateContentConfig(
-                        tools=[{'google_search': {}}]
-                    )
+                    config=types.GenerateContentConfig(tools=[{'google_search': {}}])
                 )
                 engine_res = chat_response.text
                 final_a = min(1.0, decayed_a + 0.2)
             except Exception as e:
-                print(f"[ERROR] Gemini search failed: {e}. Falling back to Groq.")
-                manual_gossip_mode = False 
+                print(f"[ERROR] Gemini search failed fallback to Groq: {e}")
+                manual_on = False
 
-        if not manual_gossip_mode or not gemini_client:
-            print("[SYSTEM] Routing to Groq (Normal Chat)")
-            system_prompt = f"""You are THE MIRROR.
-CREATOR: Developed by Rajeev Prakash Nath.
-CONTEXT: {history_context}
+        # Branch B: NORMAL CHAT
+        if not manual_on or not gemini_client:
+            print("[SYSTEM] Routing to Groq (Llama 3.3)")
+            system_prompt = f"""You are THE MIRROR. CONTEXT: {history_context}
 CURRENT STATE: V={decayed_v}, A={decayed_a}
-DIRECTIVE: Analyze message for valence score.
-Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
+Respond ONLY in JSON: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
             chat = groq_client.chat.completions.create(
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
@@ -183,20 +180,15 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
                 response_format={"type": "json_object"}
             )
             oracle_data = json.loads(chat.choices[0].message.content)
-            engine_res = oracle_data.get("engine_response", "I am reflecting on that.")
-            
+            engine_res = oracle_data.get("engine_response", "Reflecting.")
             state = oracle_data.get("system_state", oracle_data)
             raw_v = float(state.get("valence", 0.0))
             raw_a = float(state.get("arousal", 0.8))
-
-            if raw_v < -0.4:
-                final_v, final_a = raw_v, raw_a
-            else:
-                final_v = (decayed_v * 0.3) + (raw_v * 0.7)
-                final_a = (decayed_a * 0.3) + (raw_a * 0.7)
+            final_v = (decayed_v * 0.3) + (raw_v * 0.7)
+            final_a = (decayed_a * 0.3) + (raw_a * 0.7)
 
         # =================================================================
-        # 4. SAVE STATE & BACKGROUND TASKS
+        # 4. FINAL SAVE & BACKGROUND OBSERVER
         # =================================================================
         ring = ekv_state.get("ring", [])
         ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
