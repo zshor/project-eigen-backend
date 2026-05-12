@@ -1,25 +1,18 @@
 import os
-import requests
 from groq import Groq
-from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 def fetch_web_currency(query):
     """
-    FREE BACKGROUND SCRAPER (DuckDuckGo):
-    Used only by the proactive bot to save Groq API quota.
+    FREE BACKGROUND SCRAPER (DDGS):
+    Returns clean text instantly. Zero API keys.
     """
     print(f"[SYSTEM] Scraping free background news for: {query}")
-    ddg_url = f"https://html.duckduckgo.com/html/?q={query}+latest+news"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
-        response = requests.get(ddg_url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            result = soup.find('a', class_='result__snippet')
-            return result.text.strip() if result else None
-        return None
+        results = DDGS().text(query, max_results=3)
+        return "\n".join([r['body'] for r in results]) if results else None
     except Exception as e:
         print(f"[DDG FAIL] {e}")
         return None

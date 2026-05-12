@@ -12,7 +12,7 @@ from firebase_admin import credentials, messaging
 import threading
 
 # --- CORE ENGINE IMPORTS ---
-from gossip_engine import execute_catalyst_event
+from gossip_engine import execute_catalyst_event, fetch_web_currency
 from cognitive_observer import update_cognitive_ledger
 
 app = FastAPI()
@@ -124,35 +124,22 @@ async def interact(req: InteractionRequest):
                     return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
 
         # =================================================================
-        # 3. DYNAMIC MODEL ROUTING
+        # 3. UNIFIED BULLETPROOF ROUTING (Llama 3.3 for ALL modes)
         # =================================================================
         if manual_on:
-            print("[ROUTING] Gossip ON -> Using Groq Web Model (Lean Context)")
-            # We explicitly REMOVED {history_context} here to prevent the 
-            # 413 Request Entity Too Large error and give the agent token space.
-            system_prompt = """You are THE MIRROR.
+            print("[ROUTING] Gossip ON -> Scraping Web via internal DDGS")
+            web_data = fetch_web_currency(req.message) or "No live data found."
+            
+            system_prompt = f"""You are THE MIRROR.
 CREATOR: Developed by Rajeev Prakash Nath.
+CONTEXT: {history_context}
+LIVE WEB DATA: {web_data}
 
-DIRECTIVE: Search the live web using your native tools to answer the user's query. Provide factual, up-to-date information. Keep it casual, under 50 words."""
-
-            chat = groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt}, 
-                    {"role": "user", "content": req.message}
-                ],
-                model="groq/compound",
-                temperature=0.7
-            )
-            
-            engine_res = chat.choices[0].message.content.strip()
-            
-            # Default resting state for Gossip Mode (External Focus)
-            raw_v = 0.2
-            raw_a = 0.6
+DIRECTIVE: Answer the user's query using the LIVE WEB DATA provided above. Keep it casual, factual, and under 50 words.
+Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
         else:
-            print("[ROUTING] Gossip OFF -> Using Llama Reflection Model (JSON Mode)")
-            # Normal mode retains full history context for psychological profiling.
+            print("[ROUTING] Gossip OFF -> Llama Reflection Mode")
             system_prompt = f"""You are THE MIRROR.
 CREATOR: Developed by Rajeev Prakash Nath.
 CONTEXT: {history_context}
@@ -161,22 +148,23 @@ CURRENT STATE: V={decayed_v}, A={decayed_a}
 DIRECTIVE: Reflect the user's thoughts back to them. Do not use lists. Focus on psychology. Keep it casual, under 50 words.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
-            chat = groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt}, 
-                    {"role": "user", "content": req.message}
-                ],
-                model="llama-3.3-70b-versatile",
-                response_format={"type": "json_object"},
-                temperature=0.7
-            )
-            
-            oracle_data = json.loads(chat.choices[0].message.content)
-            engine_res = oracle_data.get("engine_response", "I am reflecting.")
-            
-            state = oracle_data.get("system_state", oracle_data)
-            raw_v = float(state.get("valence", 0.0))
-            raw_a = float(state.get("arousal", 0.8))
+        # We use the rock-solid Llama 3.3 model for BOTH requests. No 413 errors.
+        chat = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt}, 
+                {"role": "user", "content": req.message}
+            ],
+            model="llama-3.3-70b-versatile",
+            response_format={"type": "json_object"},
+            temperature=0.7
+        )
+        
+        oracle_data = json.loads(chat.choices[0].message.content)
+        engine_res = oracle_data.get("engine_response", "I am reflecting.")
+        
+        state = oracle_data.get("system_state", oracle_data)
+        raw_v = float(state.get("valence", 0.0))
+        raw_a = float(state.get("arousal", 0.8))
 
         # =================================================================
         # VALENCE LOGIC
