@@ -125,7 +125,7 @@ async def interact(req: InteractionRequest):
         decayed_a = prev_a * math.exp(-DECAY_LAMBDA * hours_elapsed)
 
         # =================================================================
-        # 2. PROACTIVE HIJACK (Original Proactive Logic)
+        # 2. PROACTIVE HIJACK (Original Logic)
         # =================================================================
         if engine_active and not manual_on:
             if cog_state.get("user_wants_gossip") or cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
@@ -150,23 +150,22 @@ CONTEXT: {history_context}
 STATE: V={decayed_v}, A={decayed_a}
 
 DIRECTIVE:
-1. Use history context to resolve user pronouns (e.g., 'who won' refers to the match discussed earlier).
-2. If you need live data to answer accurately, call the 'fetch_web_data' tool.
-3. Be factual but casual. Do not suggest websites; give the answer yourself.
-Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
+1. Use history context to resolve user pronouns.
+2. If you need live data, call 'fetch_web_data'.
+3. Always respond in JSON: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
             
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": req.message}
             ]
 
-            # First Call: Tool Discovery
+            # Call 1: Tools included, JSON Mode EXCLUDED to avoid 400 error
             response = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=messages,
                 tools=MIRROR_TOOLS,
                 tool_choice="auto",
-                response_format={"type": "json_object"}
+                temperature=0.4
             )
             
             response_message = response.choices[0].message
@@ -176,7 +175,7 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
                 messages.append(response_message)
                 for tool_call in tool_calls:
                     func_args = json.loads(tool_call.function.arguments)
-                    print(f"[AGENT] Executing search for: {func_args.get('query')}")
+                    print(f"[AGENT] Calling Google for: {func_args.get('query')}")
                     search_data = fetch_web_currency(func_args.get("query"))
                     messages.append({
                         "tool_call_id": tool_call.id,
@@ -185,36 +184,49 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
                         "content": search_data
                     })
                 
-                # Second Call: Final Synthesis
+                # Call 2: Final Synthesis. No tools here, so we RE-ENABLE JSON Mode.
                 response = groq_client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=messages,
-                    response_format={"type": "json_object"}
+                    response_format={"type": "json_object"},
+                    temperature=0.4
+                )
+            else:
+                # If no tools were called, we need to ensure the response is JSON.
+                # Since the first call didn't use JSON mode, we force a re-run for safety.
+                messages.append({"role": "system", "content": "Respond ONLY in the specified JSON format."})
+                response = groq_client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.4
                 )
 
         else:
-            # REFLECTION MODE: Standard context-aware empathy
+            # REFLECTION MODE: Normal operation
             system_prompt = f"""You are THE MIRROR.
 CREATOR: Rajeev Prakash Nath.
 CONTEXT: {history_context}
 STATE: V={decayed_v}, A={decayed_a}
 
-DIRECTIVE: Reflect user thoughts casually. No lists. Focus on psychology. Under 50 words.
+DIRECTIVE: Reflect user thoughts. Casual. Under 50 words.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
             
             response = groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant", # Fast model for reflection
+                model="llama-3.3-70b-versatile",
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                temperature=0.7
             )
 
         # =================================================================
-        # 4. VALENCE LOGIC & PERSISTENCE (Original Math)
+        # 4. VALENCE LOGIC & PERSISTENCE (Original Logic)
         # =================================================================
         res_data = json.loads(response.choices[0].message.content)
         engine_res = res_data.get("engine_response", "Reflecting.")
         state = res_data.get("system_state", res_data)
-        raw_v, raw_a = float(state.get("valence", 0.0)), float(state.get("arousal", 0.8))
+        raw_v = float(state.get("valence", 0.0))
+        raw_a = float(state.get("arousal", 0.8))
 
         if raw_v < -0.4:
             final_v, final_a = raw_v, raw_a

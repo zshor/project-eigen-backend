@@ -9,9 +9,9 @@ GOOGLE_CX = os.environ.get("GOOGLE_SEARCH_CX")
 def fetch_web_currency(query):
     """
     OFFICIAL GOOGLE SEARCH API:
-    High-speed, factual, and legal. Bypasses all scraper walls.
+    The Agent in main.py calls this function whenever it needs live data.
     """
-    print(f"[AGENT TOOL] Google Searching: {query}")
+    print(f"[GOOGLE SEARCH] Agent requested search for: {query}")
     if not GOOGLE_API_KEY or not GOOGLE_CX:
         return "Search credentials missing in Render environment."
 
@@ -28,6 +28,7 @@ def fetch_web_currency(query):
         if res.status_code == 200:
             data = res.json()
             items = data.get("items", [])
+            # Format results clearly so the Agent can read them easily
             return "\n".join([f"{i['title']}: {i['snippet']}" for i in items]) if items else "No live results found."
         return f"Google API Error: {res.status_code}"
     except Exception as e:
@@ -54,7 +55,7 @@ def extract_top_interest(interest_matrix):
     return best_topic if best_topic else "latest technology trends"
 
 def generate_gossip_catalyst(topic, web_snippet, mutated_prompt):
-    """ORIGINAL LOGIC: Personality-driven message generator."""
+    """ORIGINAL LOGIC: Personality-driven message generator for proactive hits."""
     system_instruction = f"""
     You are THE MIRROR, a casual and empathetic friend.
     TOPIC: {topic}
@@ -88,10 +89,9 @@ def execute_catalyst_event(supabase_client, user_id):
         gossip_msg = generate_gossip_catalyst(topic, web_snippet, user_data.get("mutated_prompt", ""))
 
         supabase_client.table("user_cognitive_state").update({
-            "user_id": user_id,
             "user_wants_gossip": True,
             "current_mode": "SOCRATIC_GOSSIP"
-        }).execute()
+        }).eq("user_id", user_id).execute()
 
         return gossip_msg
     except Exception as e:
