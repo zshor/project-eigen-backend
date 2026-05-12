@@ -11,7 +11,7 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 import threading
 
-# --- NEW: GOOGLE GENAI IMPORT ---
+# --- GOOGLE GENAI IMPORT ---
 from google import genai
 from google.genai import types
 
@@ -61,7 +61,7 @@ EKV_CAPACITY = 5
 class InteractionRequest(BaseModel):
     message: str
     user_id: str
-    gossip_mode: bool = False # Fix: Accepts toggle state from Frontend directly
+    gossip_mode: bool = False # Accepts toggle state from Frontend
 
 def send_instant_vibration(user_id, text):
     try:
@@ -81,15 +81,19 @@ def send_instant_vibration(user_id, text):
 async def interact(req: InteractionRequest):
     try:
         # =================================================================
-        # 1. FETCH COGNITIVE STATE & HISTORY
+        # 1. FETCH COGNITIVE STATE & MASTER ALIGNMENT
         # =================================================================
-        
-        # FIX: The backend now handles the Supabase update because Frontend RLS is blocking it.
         manual_gossip_mode = req.gossip_mode
+        
+        # ALIGNMENT: Force all gossip columns to match the manual toggle state
+        db_update_payload = {
+            "manual_gossip_toggle": manual_gossip_mode,
+            "current_mode": "SOCRATIC_GOSSIP" if manual_gossip_mode else "NORMAL_CHAT",
+            "user_wants_gossip": manual_gossip_mode
+        }
+
         try:
-            supabase.table("user_cognitive_state").update({
-                "manual_gossip_toggle": manual_gossip_mode
-            }).eq("user_id", req.user_id).execute()
+            supabase.table("user_cognitive_state").update(db_update_payload).eq("user_id", req.user_id).execute()
         except Exception as sync_err:
             print(f"[DB SYNC] Backend bypass update: {sync_err}")
 
@@ -147,12 +151,10 @@ async def interact(req: InteractionRequest):
         engine_res = ""
         final_v, final_a = decayed_v, decayed_a
 
-        # --- BRANCH A: GOSSIP MODE (GEMINI WEB SEARCH) ---
         if manual_gossip_mode and gemini_client:
             print("[SYSTEM] Routing to Gemini (Search Grounded)")
             try:
-                sys_instruct = f"You are THE MIRROR in GOSSIP/RESEARCH mode. Use Google Search to find the latest real-time data to answer the user.\n\nPAST CONTEXT:\n{history_context}"
-                
+                sys_instruct = f"You are THE MIRROR in GOSSIP/RESEARCH mode. Use Google Search to find data.\n\nPAST CONTEXT:\n{history_context}"
                 chat_response = gemini_client.models.generate_content(
                     model='gemini-2.0-flash',
                     contents=f"{sys_instruct}\n\nCURRENT MESSAGE: {req.message}",
@@ -160,14 +162,12 @@ async def interact(req: InteractionRequest):
                         tools=[{'google_search': {}}]
                     )
                 )
-                
                 engine_res = chat_response.text
-                final_a = min(1.0, decayed_a + 0.2) # Artificially bump arousal for research
+                final_a = min(1.0, decayed_a + 0.2)
             except Exception as e:
                 print(f"[ERROR] Gemini search failed: {e}. Falling back to Groq.")
                 manual_gossip_mode = False 
 
-        # --- BRANCH B: NORMAL CHAT (GROQ) ---
         if not manual_gossip_mode or not gemini_client:
             print("[SYSTEM] Routing to Groq (Normal Chat)")
             system_prompt = f"""You are THE MIRROR.
