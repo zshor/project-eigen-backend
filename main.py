@@ -91,6 +91,7 @@ async def interact(req: InteractionRequest):
         history_context = ""
         prev_v, prev_a = 0.0, 0.8
         hours_elapsed = 0.0
+        # metrics restored
         ekv_state = {"capacity": EKV_CAPACITY, "ring": [], "metrics": {"volatility": 0.0, "velocity": 0.0, "baseline_v": 0.0}}
 
         if past_records.data:
@@ -104,7 +105,7 @@ async def interact(req: InteractionRequest):
             for r in reversed(past_records.data):
                 history_context += f"User: {r['message']}\nMirror: {r['response']}\n"
 
-        # EMOTIONAL DECAY
+        # EMOTIONAL DECAY: V_decayed = V_prev * e^(-lambda * t)
         decayed_v = prev_v * math.exp(-DECAY_LAMBDA * hours_elapsed)
         decayed_a = prev_a * math.exp(-DECAY_LAMBDA * hours_elapsed)
 
@@ -124,27 +125,26 @@ async def interact(req: InteractionRequest):
                     return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
 
         # =================================================================
-        # 3. UNIFIED BULLETPROOF ROUTING (REFINED PROMPT)
+        # 3. UNIFIED BULLETPROOF ROUTING (STRICT RESEARCH MODE)
         # =================================================================
         if manual_on:
-            print("[ROUTING] Gossip ON -> Scraping Web via internal DDGS")
-            web_data = fetch_web_currency(req.message) or "No live data found."
+            print(f"[ROUTING] Gossip ON -> Official Google Search: {req.message}")
+            web_data = fetch_web_currency(req.message) or "No live news data found."
             
-            # STRICT INSTRUCTION: No link suggestions, use history to resolve topics.
             system_prompt = f"""You are THE MIRROR in STRICT RESEARCH MODE. 
 CREATOR: Rajeev Prakash Nath.
 
 CONVERSATION HISTORY:
 {history_context}
 
-LIVE WEB DATA:
+OFFICIAL GOOGLE DATA:
 {web_data}
 
 DIRECTIVE: 
-1. Use HISTORY to resolve pronouns (e.g., if User says 'who won' and HISTORY mentions 'IPL', the topic is IPL).
-2. Answer the user's question DIRECTLY using ONLY the LIVE WEB DATA.
-3. DO NOT tell the user to check other websites or provide links. Give the score/result found in the data.
-4. Keep it casual, under 40 words.
+1. Use CONVERSATION HISTORY to resolve pronouns (e.g., 'who won' refers to the match in history).
+2. Answer the user DIRECTLY using the OFFICIAL GOOGLE DATA.
+3. DO NOT suggest checking other sites. Give the factual result found in the data.
+4. Keep it casual, empathetic, and under 40 words.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
         else:
@@ -154,7 +154,7 @@ CREATOR: Rajeev Prakash Nath.
 CONTEXT: {history_context}
 CURRENT STATE: V={decayed_v}, A={decayed_a}
 
-DIRECTIVE: Reflect user thoughts. Casual, no lists, under 50 words.
+DIRECTIVE: Reflect user thoughts. Casual, no lists, under 50 words. Sound like a friend.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
         chat = groq_client.chat.completions.create(
@@ -164,7 +164,7 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
             ],
             model="llama-3.3-70b-versatile",
             response_format={"type": "json_object"},
-            temperature=0.4 # Reduced temperature for higher factual accuracy
+            temperature=0.4 # Reduced for higher factual stability in research
         )
         
         oracle_data = json.loads(chat.choices[0].message.content)
@@ -172,7 +172,7 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
         state = oracle_data.get("system_state", oracle_data)
         raw_v, raw_a = float(state.get("valence", 0.0)), float(state.get("arousal", 0.8))
 
-        # VALENCE LOGIC
+        # VALENCE LOGIC: Original smoothing logic
         if raw_v < -0.4:
             final_v, final_a = raw_v, raw_a
         else:
@@ -188,11 +188,14 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
 
         supabase.table("interactions").insert({
             "user_id": req.user_id, "message": req.message, "response": engine_res,
-            "valence": final_v, "arousal": final_a, "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring, "metrics": ekv_state.get("metrics", {})}
+            "valence": final_v, "arousal": final_a, 
+            "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring, "metrics": ekv_state.get("metrics", {})}
         }).execute()
 
         send_instant_vibration(req.user_id, engine_res)
+        
         if engine_active:
+            # Start the cognitive observer in a background thread to keep UI speed high
             threading.Thread(target=update_cognitive_ledger, args=(supabase, req.user_id, req.message)).start()
 
         return {"engine_response": engine_res, "system_state": {"valence": final_v, "arousal": final_a}}
