@@ -9,9 +9,12 @@ from supabase import create_client, Client
 from groq import Groq
 import firebase_admin
 from firebase_admin import credentials, messaging
+import threading
+
+# --- GOOGLE GEMINI IMPORT ---
+import google.generativeai as genai
 
 # --- GOSSIP ENGINE IMPORTS ---
-import threading
 from gossip_engine import execute_catalyst_event
 from cognitive_observer import update_cognitive_ledger
 
@@ -30,6 +33,14 @@ supabase_url = os.environ.get("SUPABASE_URL")
 supabase_key = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+# --- GEMINI SETUP ---
+gemini_api_key = os.environ.get("GEMINI_API_KEY")
+if gemini_api_key:
+    genai.configure(api_key=gemini_api_key)
+    print("[SYSTEM] Gemini AI (Web Search) Active.")
+else:
+    print("[WARNING] GEMINI_API_KEY not found in environment.")
 
 # 2. FIREBASE HARDWARE BRIDGE
 try:
@@ -67,39 +78,16 @@ def send_instant_vibration(user_id, text):
 async def interact(req: InteractionRequest):
     try:
         # =================================================================
-        # THE CIRCUIT BREAKER & INTENT ROUTING
+        # 1. FETCH COGNITIVE STATE & HISTORY
         # =================================================================
-        engine_active = os.getenv("ENABLE_GOSSIP_ENGINE", "False").lower() == "true"
-        
-        if engine_active:
-            try:
-                cog_state_res = supabase.table("user_cognitive_state").select("*").eq("user_id", req.user_id).execute()
-                if cog_state_res.data:
-                    cog_state = cog_state_res.data[0]
-                    
-                    # If they asked for gossip OR the background script primed them
-                    if cog_state.get("user_wants_gossip") == True or cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
-                        print("[GOSSIP ENGINE] Intent Route Triggered!")
-                        
-                        gossip_response = execute_catalyst_event(supabase, req.user_id)
-                        
-                        if gossip_response:
-                            # Save the gossip text to chat history so it shows on the UI!
-                            supabase.table("interactions").insert({
-                                "user_id": req.user_id, "message": req.message, "response": gossip_response,
-                                "valence": 0.6, "arousal": 0.8, "ekv_state": {"capacity": EKV_CAPACITY, "ring": []}
-                            }).execute()
-                            
-                            send_instant_vibration(req.user_id, gossip_response)
-                            return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
+        cog_state = {}
+        cog_state_res = supabase.table("user_cognitive_state").select("*").eq("user_id", req.user_id).execute()
+        if cog_state_res.data:
+            cog_state = cog_state_res.data[0]
             
-            except Exception as e:
-                print(f"[ERROR] Engine routing failed safely: {e}")
-                pass # If the engine fails, just fall through to normal chat!
-        # =================================================================
+        manual_gossip_mode = cog_state.get("manual_gossip_toggle", False)
+        engine_active = os.getenv("ENABLE_GOSSIP_ENGINE", "False").lower() == "true"
 
-
-        # NORMAL CORE CHAT CONTINUES BELOW...
         history_context = ""
         prev_v, prev_a = 0.0, 0.8
         hours_elapsed = 0.0
@@ -122,33 +110,78 @@ async def interact(req: InteractionRequest):
         decayed_v = prev_v * math.exp(-DECAY_LAMBDA * hours_elapsed)
         decayed_a = prev_a * math.exp(-DECAY_LAMBDA * hours_elapsed)
 
-        system_prompt = f"""You are THE MIRROR.
+        # =================================================================
+        # 2. PROACTIVE HIJACK (Background trigger)
+        # =================================================================
+        if engine_active and not manual_gossip_mode:
+            try:
+                if cog_state.get("user_wants_gossip") == True or cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
+                    print("[GOSSIP ENGINE] Intent Route Triggered!")
+                    gossip_response = execute_catalyst_event(supabase, req.user_id)
+                    if gossip_response:
+                        supabase.table("interactions").insert({
+                            "user_id": req.user_id, "message": req.message, "response": gossip_response,
+                            "valence": 0.6, "arousal": 0.8, "ekv_state": {"capacity": EKV_CAPACITY, "ring": []}
+                        }).execute()
+                        send_instant_vibration(req.user_id, gossip_response)
+                        return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
+            except Exception as e:
+                print(f"[ERROR] Engine routing failed safely: {e}")
+
+
+        # =================================================================
+        # 3. CORE ROUTING (GEMINI vs GROQ)
+        # =================================================================
+        engine_res = ""
+        final_v, final_a = decayed_v, decayed_a
+
+        # --- BRANCH A: GOSSIP MODE (GEMINI WEB SEARCH) ---
+        if manual_gossip_mode and gemini_api_key:
+            print("[SYSTEM] Routing to Gemini (Search Grounded)")
+            try:
+                model = genai.GenerativeModel('gemini-1.5-flash', tools='google_search_retrieval')
+                sys_instruct = "You are THE MIRROR in GOSSIP/RESEARCH mode. Use Google Search to find the latest real-time data to answer the user."
+                
+                chat_response = model.generate_content(f"{sys_instruct}\n\nUser: {req.message}")
+                engine_res = chat_response.text
+                
+                # Artificially bump arousal slightly because research is active/stimulating
+                final_a = min(1.0, decayed_a + 0.2) 
+            except Exception as e:
+                print(f"[ERROR] Gemini search failed: {e}. Falling back to Groq.")
+                manual_gossip_mode = False # Force fallback if Google API fails
+
+        # --- BRANCH B: NORMAL CHAT (GROQ) ---
+        if not manual_gossip_mode or not gemini_api_key:
+            print("[SYSTEM] Routing to Groq (Normal Chat)")
+            system_prompt = f"""You are THE MIRROR.
 CREATOR: Developed by Rajeev Prakash Nath.
 CONTEXT: {history_context}
 CURRENT STATE: V={decayed_v}, A={decayed_a}
 DIRECTIVE: Analyze message for valence score.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
-        chat = groq_client.chat.completions.create(
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
-            model="llama-3.3-70b-versatile",
-            response_format={"type": "json_object"}
-        )
+            chat = groq_client.chat.completions.create(
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
+                model="llama-3.3-70b-versatile",
+                response_format={"type": "json_object"}
+            )
+            oracle_data = json.loads(chat.choices[0].message.content)
+            engine_res = oracle_data.get("engine_response", "I am reflecting on that.")
+            
+            state = oracle_data.get("system_state", oracle_data)
+            raw_v = float(state.get("valence", 0.0))
+            raw_a = float(state.get("arousal", 0.8))
 
-        oracle_data = json.loads(chat.choices[0].message.content)
+            if raw_v < -0.4:
+                final_v, final_a = raw_v, raw_a
+            else:
+                final_v = (decayed_v * 0.3) + (raw_v * 0.7)
+                final_a = (decayed_a * 0.3) + (raw_a * 0.7)
 
-        engine_res = oracle_data.get("engine_response", "I am reflecting on that.")
-
-        state = oracle_data.get("system_state", oracle_data)
-        raw_v = float(state.get("valence", 0.0))
-        raw_a = float(state.get("arousal", 0.8))
-
-        if raw_v < -0.4:
-            final_v, final_a = raw_v, raw_a
-        else:
-            final_v = (decayed_v * 0.3) + (raw_v * 0.7)
-            final_a = (decayed_a * 0.3) + (raw_a * 0.7)
-
+        # =================================================================
+        # 4. SAVE STATE & BACKGROUND TASKS
+        # =================================================================
         ring = ekv_state.get("ring", [])
         ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
         if len(ring) > EKV_CAPACITY: ring.pop(0)
@@ -160,12 +193,8 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
 
         send_instant_vibration(req.user_id, engine_res)
 
-        # =================================================================
-        # THE SILENT OBSERVER
-        # Run the cognitive matrix update in the background, so the user gets their reply instantly!
         if engine_active:
             threading.Thread(target=update_cognitive_ledger, args=(supabase, req.user_id, req.message)).start()
-        # =================================================================
 
         return {"engine_response": engine_res, "system_state": {"valence": final_v, "arousal": final_a}}
 
