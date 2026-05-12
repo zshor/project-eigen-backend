@@ -12,7 +12,7 @@ from firebase_admin import credentials, messaging
 import threading
 
 # --- CORE ENGINE IMPORTS ---
-from gossip_engine import execute_catalyst_event, fetch_web_currency
+from gossip_engine import execute_catalyst_event
 from cognitive_observer import update_cognitive_ledger
 
 app = FastAPI()
@@ -69,7 +69,6 @@ async def interact(req: InteractionRequest):
         # =================================================================
         manual_on = req.gossip_mode
         
-        # PERSISTENT SYNC (Ensures all engines see the same mode)
         supabase.table("user_cognitive_state").upsert({
             "user_id": req.user_id,
             "manual_gossip_toggle": manual_on,
@@ -86,7 +85,6 @@ async def interact(req: InteractionRequest):
         history_context = ""
         prev_v, prev_a = 0.0, 0.8
         hours_elapsed = 0.0
-        # Initialize EKV with metrics
         ekv_state = {"capacity": EKV_CAPACITY, "ring": [], "metrics": {"volatility": 0.0, "velocity": 0.0, "baseline_v": 0.0}}
 
         if past_records.data:
@@ -120,27 +118,34 @@ async def interact(req: InteractionRequest):
                     return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
 
         # =================================================================
-        # 3. UNIFIED ROUTING (TAVILY SEARCH + GROQ)
+        # 3. DYNAMIC MODEL ROUTING
         # =================================================================
-        web_context = ""
         if manual_on:
-            print(f"[SYSTEM] Researching: {req.message}")
-            web_context = fetch_web_currency(req.message) or "No live news found for this query."
+            print("[ROUTING] Gossip ON -> Using Groq Web Model")
+            target_model = "groq/compound"
+            behavior = "Search the live web using your native tools to answer the user. Provide factual, up-to-date information."
+        else:
+            print("[ROUTING] Gossip OFF -> Using Llama Reflection Model")
+            target_model = "llama-3.3-70b-versatile"
+            behavior = "Reflect the user's thoughts back to them. Do not use lists. Focus on psychology."
 
         system_prompt = f"""You are THE MIRROR.
 CREATOR: Developed by Rajeev Prakash Nath.
 CONTEXT: {history_context}
 CURRENT STATE: V={decayed_v}, A={decayed_a}
 
-{ "### GROUND TRUTH WEB DATA ###\n" + web_context if manual_on else "" }
-
-DIRECTIVE: Analyze message for valence score. Use the Web Data if present.
+DIRECTIVE: {behavior}
+Keep it casual, under 50 words, and sound like a friend.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
         chat = groq_client.chat.completions.create(
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
-            model="llama-3.3-70b-versatile",
-            response_format={"type": "json_object"}
+            messages=[
+                {"role": "system", "content": system_prompt}, 
+                {"role": "user", "content": req.message}
+            ],
+            model=target_model,
+            response_format={"type": "json_object"},
+            temperature=0.7
         )
         
         oracle_data = json.loads(chat.choices[0].message.content)
@@ -150,7 +155,7 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
         raw_v = float(state.get("valence", 0.0))
         raw_a = float(state.get("arousal", 0.8))
 
-        # RESTORING THE CORE VALENCE LOGIC (Negative Priority)
+        # VALENCE LOGIC
         if raw_v < -0.4:
             final_v, final_a = raw_v, raw_a
         else:

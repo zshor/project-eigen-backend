@@ -4,32 +4,12 @@ from groq import Groq
 from bs4 import BeautifulSoup
 
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-tavily_api_key = os.environ.get("TAVILY_API_KEY")
 
-def fetch_web_currency(query, use_tavily=True):
+def fetch_web_currency(query):
     """
-    HYBRID SEARCH LOGIC:
-    - Manual Research (use_tavily=True): Uses Tavily for Ground Truth.
-    - Background Gossip (use_tavily=False): Uses DuckDuckGo to save quota.
+    FREE BACKGROUND SCRAPER (DuckDuckGo):
+    Used only by the proactive bot to save Groq API quota.
     """
-    if use_tavily and tavily_api_key:
-        url = "https://api.tavily.com/search"
-        payload = {
-            "api_key": tavily_api_key,
-            "query": query,
-            "search_depth": "advanced",
-            "include_answer": True,
-            "max_results": 3
-        }
-        try:
-            res = requests.post(url, json=payload, timeout=15)
-            if res.status_code == 200:
-                data = res.json()
-                return data.get("answer") or "\n".join([r.get("content", "") for r in data.get("results", [])])
-        except Exception as e:
-            print(f"[TAVILY FAIL] {e}")
-
-    # --- FREE BACKGROUND SCRAPER (DuckDuckGo) ---
     print(f"[SYSTEM] Scraping free background news for: {query}")
     ddg_url = f"https://html.duckduckgo.com/html/?q={query}+latest+news"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -45,10 +25,6 @@ def fetch_web_currency(query, use_tavily=True):
         return None
 
 def extract_top_interest(interest_matrix):
-    """
-    RECURSIVE TRAVERSAL LOGIC: 
-    Finds the highest weighted topic in the JSON Multi-Domain tree.
-    """
     best_topic = ""
     highest_weight = 0
     def traverse(node, current_path=""):
@@ -68,10 +44,6 @@ def extract_top_interest(interest_matrix):
     return best_topic if best_topic else "latest technology trends"
 
 def generate_gossip_catalyst(topic, web_snippet, mutated_prompt):
-    """
-    MIRROR PERSONA LOGIC: 
-    Casual companion text, under 30 words.
-    """
     system_instruction = f"""
     You are THE MIRROR, a casual and empathetic friend.
     TOPIC: {topic}
@@ -90,28 +62,19 @@ def generate_gossip_catalyst(topic, web_snippet, mutated_prompt):
     return completion.choices[0].message.content.strip()
 
 def execute_catalyst_event(supabase_client, user_id):
-    """
-    PROACTIVE TRIGGER LOGIC:
-    Scrapes for free, sends push, and signals the Frontend to auto-toggle.
-    """
     try:
-        # 1. Fetch State
         user_res = supabase_client.table("user_cognitive_state").select("*").eq("user_id", user_id).execute()
         if not user_res.data: return None
         user_data = user_res.data[0]
         
-        # 2. Free Scrape (Save Tavily Quota)
         topic = extract_top_interest(user_data.get("interest_matrix", {}))
-        web_snippet = fetch_web_currency(topic, use_tavily=False)
+        web_snippet = fetch_web_currency(topic)
         
         if not web_snippet:
             web_snippet = f"I was just thinking about {topic}."
 
-        # 3. Build Message
         gossip_msg = generate_gossip_catalyst(topic, web_snippet, user_data.get("mutated_prompt", ""))
 
-        # 4. THE HANDSHAKE SIGNAL
-        # Setting user_wants_gossip to True tells the Frontend to flip the toggle Orange.
         supabase_client.table("user_cognitive_state").update({
             "user_wants_gossip": True,
             "current_mode": "SOCRATIC_GOSSIP"
