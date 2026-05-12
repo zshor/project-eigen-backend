@@ -1,6 +1,7 @@
 import os
 import json
 from datetime import datetime, timezone, timedelta
+from dateutil import parser
 from dotenv import load_dotenv
 load_dotenv()
 from supabase import create_client, Client
@@ -65,7 +66,10 @@ def evaluate_soul():
 
         last_chat = chats.data[0]
         v = float(last_chat['valence'])
-        last_time = datetime.fromisoformat(last_chat['created_at'].replace("Z", "+00:00"))
+        
+        # ---> THE FIX: Using dateutil parser to handle Supabase fractional seconds safely <---
+        last_time = parser.isoparse(last_chat['created_at'])
+        
         hours_since = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
 
         yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
