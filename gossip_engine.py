@@ -1,7 +1,6 @@
 import os
 import requests
 from groq import Groq
-from bs4 import BeautifulSoup
 
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
@@ -23,18 +22,14 @@ def extract_top_interest(interest_matrix):
     return best_topic if best_topic else "latest technology news"
 
 def fetch_web_currency(topic):
-    url = "https://html.duckduckgo.com/html/"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    data = {"q": f"{topic} latest news"}
+    url = f"https://s.jina.ai/{topic.replace(' ', '+')}"
     try:
-        response = requests.post(url, headers=headers, data=data, timeout=5)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        result = soup.find('a', class_='result__snippet')
-        if result:
-            return result.text.strip()
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            return response.text[:3000]
         return None
     except Exception as e:
-        print(f"Web search failed: {e}")
+        print(f"Jina search failed: {e}")
         return None
 
 def generate_gossip_catalyst(topic, web_snippet, mutated_prompt):
@@ -46,7 +41,7 @@ def generate_gossip_catalyst(topic, web_snippet, mutated_prompt):
     TASK: Write ONE casual, human-sounding text message (under 30 words).
     1. First, TELL the user about the news you just read in a casual way.
     2. Then, transition seamlessly into asking a question that satisfies your internal objective.
-    Do NOT sound like a bot. Sound like a friend who just saw something cool online.
+    Do NOT sound like a bot. Sound like a friend who just saw something online.
     """
     completion = groq_client.chat.completions.create(
         messages=[{"role": "system", "content": system_instruction}],
@@ -58,12 +53,10 @@ def generate_gossip_catalyst(topic, web_snippet, mutated_prompt):
 
 def execute_catalyst_event(supabase_client, user_id):
     try:
-        user_data = supabase_client.table("user_cognitive_state").select("*").eq("user_id", user_id).execute().data[0]
+        user_res = supabase_client.table("user_cognitive_state").select("*").eq("user_id", user_id).execute()
+        user_data = user_res.data[0]
         interest_matrix = user_data.get("interest_matrix", {})
         mutated_prompt = user_data.get("mutated_prompt", "Find out what they are currently working on.")
-        
-        # --- FIX: PROTECT THE MANUAL TOGGLE ---
-        manual_toggle = user_data.get("manual_gossip_toggle", False)
 
         top_interest = extract_top_interest(interest_matrix)
         web_snippet = fetch_web_currency(top_interest)
@@ -73,8 +66,7 @@ def execute_catalyst_event(supabase_client, user_id):
 
         gossip_message = generate_gossip_catalyst(top_interest, web_snippet, mutated_prompt)
 
-        # Only reset the mode back to normal IF the user is NOT manually researching.
-        if not manual_toggle:
+        if not user_data.get("manual_gossip_toggle", False):
             supabase_client.table("user_cognitive_state").update({
                 "current_mode": "NORMAL_CHAT",
                 "user_wants_gossip": False
