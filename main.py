@@ -127,13 +127,13 @@ async def interact(req: InteractionRequest):
         # 3. DYNAMIC MODEL ROUTING
         # =================================================================
         if manual_on:
-            print("[ROUTING] Gossip ON -> Using Groq Web Model (Text Mode)")
-            # NO JSON Formatting here. Groq's web tool doesn't support it.
-            system_prompt = f"""You are THE MIRROR.
+            print("[ROUTING] Gossip ON -> Using Groq Web Model (Lean Context)")
+            # We explicitly REMOVED {history_context} here to prevent the 
+            # 413 Request Entity Too Large error and give the agent token space.
+            system_prompt = """You are THE MIRROR.
 CREATOR: Developed by Rajeev Prakash Nath.
-CONTEXT: {history_context}
 
-DIRECTIVE: Search the live web using your native tools to answer the user. Provide factual, up-to-date information. Keep it casual, under 50 words."""
+DIRECTIVE: Search the live web using your native tools to answer the user's query. Provide factual, up-to-date information. Keep it casual, under 50 words."""
 
             chat = groq_client.chat.completions.create(
                 messages=[
@@ -152,6 +152,7 @@ DIRECTIVE: Search the live web using your native tools to answer the user. Provi
 
         else:
             print("[ROUTING] Gossip OFF -> Using Llama Reflection Model (JSON Mode)")
+            # Normal mode retains full history context for psychological profiling.
             system_prompt = f"""You are THE MIRROR.
 CREATOR: Developed by Rajeev Prakash Nath.
 CONTEXT: {history_context}
