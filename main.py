@@ -141,18 +141,20 @@ async def interact(req: InteractionRequest):
         if manual_gossip_mode and gemini_client:
             print("[SYSTEM] Routing to Gemini (Search Grounded)")
             try:
-                sys_instruct = "You are THE MIRROR in GOSSIP/RESEARCH mode. Use Google Search to find the latest real-time data to answer the user."
+                # -> FIX: Added history_context so Gemini remembers the conversation!
+                sys_instruct = f"You are THE MIRROR in GOSSIP/RESEARCH mode. Use Google Search to find the latest real-time data to answer the user.\n\nPAST CONTEXT:\n{history_context}"
                 
-                # New SDK syntax for Search Grounding
+                # -> FIX: Using the correct, stable gemini-2.0-flash model
                 chat_response = gemini_client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=f"{sys_instruct}\n\nUser: {req.message}",
+                    model='gemini-2.0-flash',
+                    contents=f"{sys_instruct}\n\nCURRENT MESSAGE: {req.message}",
                     config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())]
+                        tools=[{'google_search': {}}]
                     )
                 )
+                
                 engine_res = chat_response.text
-                final_a = min(1.0, decayed_a + 0.2) 
+                final_a = min(1.0, decayed_a + 0.2) # Artificially bump arousal for research
             except Exception as e:
                 print(f"[ERROR] Gemini search failed: {e}. Falling back to Groq.")
                 manual_gossip_mode = False 
