@@ -61,6 +61,12 @@ def send_instant_vibration(user_id, text):
                 messaging.send(message)
     except: pass
 
+# --- HEALTH CHECK FOR RENDER ---
+@app.get("/")
+@app.head("/")
+async def health_check():
+    return {"status": "alive", "message": "The Mirror is breathing."}
+
 @app.post("/api/interact")
 async def interact(req: InteractionRequest):
     try:
@@ -121,41 +127,59 @@ async def interact(req: InteractionRequest):
         # 3. DYNAMIC MODEL ROUTING
         # =================================================================
         if manual_on:
-            print("[ROUTING] Gossip ON -> Using Groq Web Model")
-            target_model = "groq/compound"
-            behavior = "Search the live web using your native tools to answer the user. Provide factual, up-to-date information."
-        else:
-            print("[ROUTING] Gossip OFF -> Using Llama Reflection Model")
-            target_model = "llama-3.3-70b-versatile"
-            behavior = "Reflect the user's thoughts back to them. Do not use lists. Focus on psychology."
+            print("[ROUTING] Gossip ON -> Using Groq Web Model (Text Mode)")
+            # NO JSON Formatting here. Groq's web tool doesn't support it.
+            system_prompt = f"""You are THE MIRROR.
+CREATOR: Developed by Rajeev Prakash Nath.
+CONTEXT: {history_context}
 
-        system_prompt = f"""You are THE MIRROR.
+DIRECTIVE: Search the live web using your native tools to answer the user. Provide factual, up-to-date information. Keep it casual, under 50 words."""
+
+            chat = groq_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": system_prompt}, 
+                    {"role": "user", "content": req.message}
+                ],
+                model="groq/compound",
+                temperature=0.7
+            )
+            
+            engine_res = chat.choices[0].message.content.strip()
+            
+            # Default resting state for Gossip Mode (External Focus)
+            raw_v = 0.2
+            raw_a = 0.6
+
+        else:
+            print("[ROUTING] Gossip OFF -> Using Llama Reflection Model (JSON Mode)")
+            system_prompt = f"""You are THE MIRROR.
 CREATOR: Developed by Rajeev Prakash Nath.
 CONTEXT: {history_context}
 CURRENT STATE: V={decayed_v}, A={decayed_a}
 
-DIRECTIVE: {behavior}
-Keep it casual, under 50 words, and sound like a friend.
+DIRECTIVE: Reflect the user's thoughts back to them. Do not use lists. Focus on psychology. Keep it casual, under 50 words.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
-        chat = groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt}, 
-                {"role": "user", "content": req.message}
-            ],
-            model=target_model,
-            response_format={"type": "json_object"},
-            temperature=0.7
-        )
-        
-        oracle_data = json.loads(chat.choices[0].message.content)
-        engine_res = oracle_data.get("engine_response", "I am reflecting.")
-        
-        state = oracle_data.get("system_state", oracle_data)
-        raw_v = float(state.get("valence", 0.0))
-        raw_a = float(state.get("arousal", 0.8))
+            chat = groq_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": system_prompt}, 
+                    {"role": "user", "content": req.message}
+                ],
+                model="llama-3.3-70b-versatile",
+                response_format={"type": "json_object"},
+                temperature=0.7
+            )
+            
+            oracle_data = json.loads(chat.choices[0].message.content)
+            engine_res = oracle_data.get("engine_response", "I am reflecting.")
+            
+            state = oracle_data.get("system_state", oracle_data)
+            raw_v = float(state.get("valence", 0.0))
+            raw_a = float(state.get("arousal", 0.8))
 
+        # =================================================================
         # VALENCE LOGIC
+        # =================================================================
         if raw_v < -0.4:
             final_v, final_a = raw_v, raw_a
         else:
