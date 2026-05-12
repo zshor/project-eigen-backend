@@ -124,26 +124,27 @@ async def interact(req: InteractionRequest):
                     return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
 
         # =================================================================
-        # 3. UNIFIED BULLETPROOF ROUTING
+        # 3. UNIFIED BULLETPROOF ROUTING (REFINED PROMPT)
         # =================================================================
         if manual_on:
             print("[ROUTING] Gossip ON -> Scraping Web via internal DDGS")
-            web_data = fetch_web_currency(req.message) or "No live news found."
+            web_data = fetch_web_currency(req.message) or "No live data found."
             
-            # THE FIX: Explicitly tell the model to use the history context to resolve ambiguity!
-            system_prompt = f"""You are THE MIRROR. 
+            # STRICT INSTRUCTION: No link suggestions, use history to resolve topics.
+            system_prompt = f"""You are THE MIRROR in STRICT RESEARCH MODE. 
 CREATOR: Rajeev Prakash Nath.
 
-CONVERSATION HISTORY (Use this to understand context/pronouns like 'yesterday' or 'who'):
+CONVERSATION HISTORY:
 {history_context}
 
-LIVE WEB DATA (Use this for factual research):
+LIVE WEB DATA:
 {web_data}
 
 DIRECTIVE: 
-1. Use history to figure out what topic the user is talking about.
-2. Use Web Data to provide factual info.
-3. If history mentions IPL and user asks 'Who won yesterday?', look for IPL results in Web Data.
+1. Use HISTORY to resolve pronouns (e.g., if User says 'who won' and HISTORY mentions 'IPL', the topic is IPL).
+2. Answer the user's question DIRECTLY using ONLY the LIVE WEB DATA.
+3. DO NOT tell the user to check other websites or provide links. Give the score/result found in the data.
+4. Keep it casual, under 40 words.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
         else:
@@ -163,7 +164,7 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
             ],
             model="llama-3.3-70b-versatile",
             response_format={"type": "json_object"},
-            temperature=0.7
+            temperature=0.4 # Reduced temperature for higher factual accuracy
         )
         
         oracle_data = json.loads(chat.choices[0].message.content)
@@ -172,11 +173,14 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
         raw_v, raw_a = float(state.get("valence", 0.0)), float(state.get("arousal", 0.8))
 
         # VALENCE LOGIC
-        final_v = raw_v if raw_v < -0.4 else (decayed_v * 0.3) + (raw_v * 0.7)
-        final_a = (decayed_a * 0.3) + (raw_a * 0.7)
+        if raw_v < -0.4:
+            final_v, final_a = raw_v, raw_a
+        else:
+            final_v = (decayed_v * 0.3) + (raw_v * 0.7)
+            final_a = (decayed_a * 0.3) + (raw_a * 0.7)
 
         # =================================================================
-        # 4. SAVE STATE
+        # 4. SAVE STATE & BACKGROUND TASKS
         # =================================================================
         ring = ekv_state.get("ring", [])
         ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
@@ -184,7 +188,7 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
 
         supabase.table("interactions").insert({
             "user_id": req.user_id, "message": req.message, "response": engine_res,
-            "valence": final_v, "arousal": final_a, "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring}
+            "valence": final_v, "arousal": final_a, "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring, "metrics": ekv_state.get("metrics", {})}
         }).execute()
 
         send_instant_vibration(req.user_id, engine_res)
