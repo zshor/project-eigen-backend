@@ -11,7 +11,7 @@ def fetch_web_currency(query):
     OFFICIAL GOOGLE SEARCH API:
     High-speed, factual, and legal. Bypasses all scraper walls.
     """
-    print(f"[GOOGLE SEARCH] Querying: {query}")
+    print(f"[AGENT TOOL] Google Searching: {query}")
     if not GOOGLE_API_KEY or not GOOGLE_CX:
         return "Search credentials missing in Render environment."
 
@@ -20,7 +20,7 @@ def fetch_web_currency(query):
         "q": query,
         "key": GOOGLE_API_KEY,
         "cx": GOOGLE_CX,
-        "num": 3  # Top 3 high-density results
+        "num": 3 
     }
 
     try:
@@ -28,12 +28,11 @@ def fetch_web_currency(query):
         if res.status_code == 200:
             data = res.json()
             items = data.get("items", [])
-            # Format: Title + Snippet for the LLM to process
-            return "\n".join([f"{i['title']}: {i['snippet']}" for i in items]) if items else "No live news found."
+            return "\n".join([f"{i['title']}: {i['snippet']}" for i in items]) if items else "No live results found."
         return f"Google API Error: {res.status_code}"
     except Exception as e:
         print(f"[GOOGLE FAIL] {e}")
-        return None
+        return f"Search failed: {e}"
 
 def extract_top_interest(interest_matrix):
     """ORIGINAL LOGIC: Recursive weight finder for the cognitive ledger."""
@@ -89,9 +88,10 @@ def execute_catalyst_event(supabase_client, user_id):
         gossip_msg = generate_gossip_catalyst(topic, web_snippet, user_data.get("mutated_prompt", ""))
 
         supabase_client.table("user_cognitive_state").update({
+            "user_id": user_id,
             "user_wants_gossip": True,
             "current_mode": "SOCRATIC_GOSSIP"
-        }).eq("user_id", user_id).execute()
+        }).execute()
 
         return gossip_msg
     except Exception as e:

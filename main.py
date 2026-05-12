@@ -43,6 +43,24 @@ except Exception as e:
 DECAY_LAMBDA = 0.05
 EKV_CAPACITY = 5
 
+# AGENT TOOL DEFINITION
+MIRROR_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_web_data",
+            "description": "Fetch live news, sports scores, or real-time info from Google Search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query (e.g., 'IPL match result')."}
+                },
+                "required": ["query"]
+            }
+        }
+    }
+]
+
 class InteractionRequest(BaseModel):
     message: str
     user_id: str
@@ -61,7 +79,6 @@ def send_instant_vibration(user_id, text):
                 messaging.send(message)
     except: pass
 
-# --- HEALTH CHECK FOR RENDER ---
 @app.get("/")
 @app.head("/")
 async def health_check():
@@ -91,7 +108,6 @@ async def interact(req: InteractionRequest):
         history_context = ""
         prev_v, prev_a = 0.0, 0.8
         hours_elapsed = 0.0
-        # metrics restored
         ekv_state = {"capacity": EKV_CAPACITY, "ring": [], "metrics": {"volatility": 0.0, "velocity": 0.0, "baseline_v": 0.0}}
 
         if past_records.data:
@@ -105,12 +121,11 @@ async def interact(req: InteractionRequest):
             for r in reversed(past_records.data):
                 history_context += f"User: {r['message']}\nMirror: {r['response']}\n"
 
-        # EMOTIONAL DECAY: V_decayed = V_prev * e^(-lambda * t)
         decayed_v = prev_v * math.exp(-DECAY_LAMBDA * hours_elapsed)
         decayed_a = prev_a * math.exp(-DECAY_LAMBDA * hours_elapsed)
 
         # =================================================================
-        # 2. PROACTIVE HIJACK (Background trigger)
+        # 2. PROACTIVE HIJACK (Original Proactive Logic)
         # =================================================================
         if engine_active and not manual_on:
             if cog_state.get("user_wants_gossip") or cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
@@ -125,63 +140,88 @@ async def interact(req: InteractionRequest):
                     return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
 
         # =================================================================
-        # 3. UNIFIED BULLETPROOF ROUTING (STRICT RESEARCH MODE)
+        # 3. AGENTIC ROUTING (Tool-Use for Gossip Mode)
         # =================================================================
         if manual_on:
-            print(f"[ROUTING] Gossip ON -> Official Google Search: {req.message}")
-            web_data = fetch_web_currency(req.message) or "No live news data found."
-            
-            system_prompt = f"""You are THE MIRROR in STRICT RESEARCH MODE. 
+            # AGENT MODE: Model decides if it needs Google Search
+            system_prompt = f"""You are THE MIRROR in AGENTIC RESEARCH MODE.
 CREATOR: Rajeev Prakash Nath.
+CONTEXT: {history_context}
+STATE: V={decayed_v}, A={decayed_a}
 
-CONVERSATION HISTORY:
-{history_context}
-
-OFFICIAL GOOGLE DATA:
-{web_data}
-
-DIRECTIVE: 
-1. Use CONVERSATION HISTORY to resolve pronouns (e.g., 'who won' refers to the match in history).
-2. Answer the user DIRECTLY using the OFFICIAL GOOGLE DATA.
-3. DO NOT suggest checking other sites. Give the factual result found in the data.
-4. Keep it casual, empathetic, and under 40 words.
+DIRECTIVE:
+1. Use history context to resolve user pronouns (e.g., 'who won' refers to the match discussed earlier).
+2. If you need live data to answer accurately, call the 'fetch_web_data' tool.
+3. Be factual but casual. Do not suggest websites; give the answer yourself.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": req.message}
+            ]
+
+            # First Call: Tool Discovery
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+                tools=MIRROR_TOOLS,
+                tool_choice="auto",
+                response_format={"type": "json_object"}
+            )
+            
+            response_message = response.choices[0].message
+            tool_calls = response_message.tool_calls
+
+            if tool_calls:
+                messages.append(response_message)
+                for tool_call in tool_calls:
+                    func_args = json.loads(tool_call.function.arguments)
+                    print(f"[AGENT] Executing search for: {func_args.get('query')}")
+                    search_data = fetch_web_currency(func_args.get("query"))
+                    messages.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": "fetch_web_data",
+                        "content": search_data
+                    })
+                
+                # Second Call: Final Synthesis
+                response = groq_client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=messages,
+                    response_format={"type": "json_object"}
+                )
 
         else:
-            print("[ROUTING] Gossip OFF -> Llama Reflection Mode")
+            # REFLECTION MODE: Standard context-aware empathy
             system_prompt = f"""You are THE MIRROR.
 CREATOR: Rajeev Prakash Nath.
 CONTEXT: {history_context}
-CURRENT STATE: V={decayed_v}, A={decayed_a}
+STATE: V={decayed_v}, A={decayed_a}
 
-DIRECTIVE: Reflect user thoughts. Casual, no lists, under 50 words. Sound like a friend.
+DIRECTIVE: Reflect user thoughts casually. No lists. Focus on psychology. Under 50 words.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
+            
+            response = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant", # Fast model for reflection
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
+                response_format={"type": "json_object"}
+            )
 
-        chat = groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt}, 
-                {"role": "user", "content": req.message}
-            ],
-            model="llama-3.3-70b-versatile",
-            response_format={"type": "json_object"},
-            temperature=0.4 # Reduced for higher factual stability in research
-        )
-        
-        oracle_data = json.loads(chat.choices[0].message.content)
-        engine_res = oracle_data.get("engine_response", "I am reflecting.")
-        state = oracle_data.get("system_state", oracle_data)
+        # =================================================================
+        # 4. VALENCE LOGIC & PERSISTENCE (Original Math)
+        # =================================================================
+        res_data = json.loads(response.choices[0].message.content)
+        engine_res = res_data.get("engine_response", "Reflecting.")
+        state = res_data.get("system_state", res_data)
         raw_v, raw_a = float(state.get("valence", 0.0)), float(state.get("arousal", 0.8))
 
-        # VALENCE LOGIC: Original smoothing logic
         if raw_v < -0.4:
             final_v, final_a = raw_v, raw_a
         else:
             final_v = (decayed_v * 0.3) + (raw_v * 0.7)
             final_a = (decayed_a * 0.3) + (raw_a * 0.7)
 
-        # =================================================================
-        # 4. SAVE STATE & BACKGROUND TASKS
-        # =================================================================
         ring = ekv_state.get("ring", [])
         ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
         if len(ring) > EKV_CAPACITY: ring.pop(0)
@@ -193,9 +233,7 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
         }).execute()
 
         send_instant_vibration(req.user_id, engine_res)
-        
         if engine_active:
-            # Start the cognitive observer in a background thread to keep UI speed high
             threading.Thread(target=update_cognitive_ledger, args=(supabase, req.user_id, req.message)).start()
 
         return {"engine_response": engine_res, "system_state": {"valence": final_v, "arousal": final_a}}
