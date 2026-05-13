@@ -43,13 +43,20 @@ except Exception as e:
 DECAY_LAMBDA = 0.05
 EKV_CAPACITY = 5
 
-# AGENT TOOL DEFINITION
+# =================================================================
+# PRODUCTION TOOL REGISTRY & DEFINITION
+# =================================================================
+# The dispatcher maps string names from the LLM directly to Python functions
+TOOL_REGISTRY = {
+    "fetch_web_data": fetch_web_currency
+}
+
 MIRROR_TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "fetch_web_data",
-            "description": "Fetch live news, sports scores, or real-time info from Google Search.",
+            "description": "Fetch live news, sports scores, or real-time info using the web search tool.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -125,7 +132,7 @@ async def interact(req: InteractionRequest):
         decayed_a = prev_a * math.exp(-DECAY_LAMBDA * hours_elapsed)
 
         # =================================================================
-        # 2. PROACTIVE HIJACK (Original Logic)
+        # 2. PROACTIVE HIJACK
         # =================================================================
         if engine_active and not manual_on:
             if cog_state.get("user_wants_gossip") or cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
@@ -140,10 +147,10 @@ async def interact(req: InteractionRequest):
                     return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
 
         # =================================================================
-        # 3. AGENTIC ROUTING (Tool-Use for Gossip Mode)
+        # 3. AGENTIC ROUTING & ReAct LOOP
         # =================================================================
         if manual_on:
-            # AGENT MODE: Model decides if it needs Google Search
+            # ReAct AGENT MODE: Model is autonomous up to MAX_ITERATIONS
             system_prompt = f"""You are THE MIRROR in AGENTIC RESEARCH MODE.
 CREATOR: Rajeev Prakash Nath.
 CONTEXT: {history_context}
@@ -151,65 +158,65 @@ STATE: V={decayed_v}, A={decayed_a}
 
 DIRECTIVE:
 1. Use history context to resolve user pronouns.
-2. If you need live data, call 'fetch_web_data'.
-3. Always respond in JSON: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
+2. If you need live data, call 'fetch_web_data'. You can call it multiple times if necessary.
+3. Once you have all the facts, provide the final answer directly."""
             
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": req.message}
             ]
 
-            # Call 1: Tools included, JSON Mode EXCLUDED to avoid 400 error
+            MAX_ITERATIONS = 3
+            for step in range(MAX_ITERATIONS):
+                response = groq_client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=messages,
+                    tools=MIRROR_TOOLS,
+                    tool_choice="auto",
+                    temperature=0.3
+                )
+                
+                resp_msg = response.choices[0].message
+                
+                # If no tool calls are generated, the agent is ready to answer. Break the loop.
+                if not resp_msg.tool_calls:
+                    break
+                    
+                messages.append(resp_msg)
+                
+                # Execute mapped tools dynamically
+                for tool_call in resp_msg.tool_calls:
+                    func_name = tool_call.function.name
+                    if func_name in TOOL_REGISTRY:
+                        func_args = json.loads(tool_call.function.arguments)
+                        print(f"[AGENT] ReAct Step {step+1}: Calling {func_name} with {func_args}")
+                        
+                        tool_result = str(TOOL_REGISTRY[func_name](**func_args))
+                        
+                        messages.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": func_name,
+                            "content": tool_result
+                        })
+            
+            # Step out of loop: Force final JSON synthesis
+            messages.append({"role": "system", "content": "Respond ONLY in this exact JSON format: {\"engine_response\": \"string\", \"system_state\": {\"valence\": float, \"arousal\": float}}"})
             response = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=messages,
-                tools=MIRROR_TOOLS,
-                tool_choice="auto",
+                response_format={"type": "json_object"},
                 temperature=0.4
             )
-            
-            response_message = response.choices[0].message
-            tool_calls = response_message.tool_calls
-
-            if tool_calls:
-                messages.append(response_message)
-                for tool_call in tool_calls:
-                    func_args = json.loads(tool_call.function.arguments)
-                    print(f"[AGENT] Calling Google for: {func_args.get('query')}")
-                    search_data = fetch_web_currency(func_args.get("query"))
-                    messages.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": "fetch_web_data",
-                        "content": search_data
-                    })
-                
-                # Call 2: Final Synthesis. No tools here, so we RE-ENABLE JSON Mode.
-                response = groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=messages,
-                    response_format={"type": "json_object"},
-                    temperature=0.4
-                )
-            else:
-                # If no tools were called, we need to ensure the response is JSON.
-                # Since the first call didn't use JSON mode, we force a re-run for safety.
-                messages.append({"role": "system", "content": "Respond ONLY in the specified JSON format."})
-                response = groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=messages,
-                    response_format={"type": "json_object"},
-                    temperature=0.4
-                )
 
         else:
-            # REFLECTION MODE: Normal operation
+            # REFLECTION MODE: High-EQ 70B model operation
             system_prompt = f"""You are THE MIRROR.
 CREATOR: Rajeev Prakash Nath.
 CONTEXT: {history_context}
 STATE: V={decayed_v}, A={decayed_a}
 
-DIRECTIVE: Reflect user thoughts. Casual. Under 50 words.
+DIRECTIVE: Reflect user thoughts. Casual. Under 50 words. Focus on deep emotional intelligence.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
             
             response = groq_client.chat.completions.create(
@@ -220,7 +227,7 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
             )
 
         # =================================================================
-        # 4. VALENCE LOGIC & PERSISTENCE (Original Logic)
+        # 4. VALENCE LOGIC & PERSISTENCE
         # =================================================================
         res_data = json.loads(response.choices[0].message.content)
         engine_res = res_data.get("engine_response", "Reflecting.")

@@ -1,39 +1,25 @@
 import os
-import requests
 from groq import Groq
+from ddgs import DDGS
 
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-GOOGLE_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY")
-GOOGLE_CX = os.environ.get("GOOGLE_SEARCH_CX")
 
 def fetch_web_currency(query):
     """
-    OFFICIAL GOOGLE SEARCH API:
-    The Agent in main.py calls this function whenever it needs live data.
+    FREE SEARCH TOOL (DDGS):
+    The ReAct Agent in main.py calls this function whenever it needs live data.
+    No API keys required.
     """
-    print(f"[GOOGLE SEARCH] Agent requested search for: {query}")
-    if not GOOGLE_API_KEY or not GOOGLE_CX:
-        return "Search credentials missing in Render environment."
-
-    url = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "q": query,
-        "key": GOOGLE_API_KEY,
-        "cx": GOOGLE_CX,
-        "num": 3 
-    }
-
+    print(f"[AGENT TOOL] Free Scrape Search: {query}")
     try:
-        res = requests.get(url, params=params, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            items = data.get("items", [])
-            # Format results clearly so the Agent can read them easily
-            return "\n".join([f"{i['title']}: {i['snippet']}" for i in items]) if items else "No live results found."
-        return f"Google API Error: {res.status_code}"
+        with DDGS() as ddgs:
+            results = [r for r in ddgs.text(query, max_results=3)]
+            if results:
+                return "\n".join([f"{r['title']}: {r['body']}" for r in results])
+            return "No live results found for that query."
     except Exception as e:
-        print(f"[GOOGLE FAIL] {e}")
-        return f"Search failed: {e}"
+        print(f"[DDG FAIL] {e}")
+        return f"Search currently unavailable: {e}"
 
 def extract_top_interest(interest_matrix):
     """ORIGINAL LOGIC: Recursive weight finder for the cognitive ledger."""
