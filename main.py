@@ -42,11 +42,12 @@ except Exception as e:
 # EMOTIONAL PARAMETERS
 DECAY_LAMBDA = 0.05
 EKV_CAPACITY = 5
+MODEL_RESEARCHER = "llama-3.3-70b-versatile"
+MODEL_MIRROR = "llama-3.1-8b-instant"
 
 # =================================================================
-# PRODUCTION TOOL REGISTRY & DEFINITION
+# PRODUCTION TOOL REGISTRY
 # =================================================================
-# The dispatcher maps string names from the LLM directly to Python functions
 TOOL_REGISTRY = {
     "fetch_web_data": fetch_web_currency
 }
@@ -149,10 +150,13 @@ async def interact(req: InteractionRequest):
         # =================================================================
         # 3. AGENTIC ROUTING & ReAct LOOP
         # =================================================================
+        # 🕒 INJECT TEMPORAL CLOCK
+        current_date_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
+
         if manual_on:
-            # ReAct AGENT MODE: Model is autonomous up to MAX_ITERATIONS
             system_prompt = f"""You are THE MIRROR in AGENTIC RESEARCH MODE.
 CREATOR: Rajeev Prakash Nath.
+CURRENT DATE: {current_date_str}
 CONTEXT: {history_context}
 STATE: V={decayed_v}, A={decayed_a}
 
@@ -168,23 +172,31 @@ DIRECTIVE:
 
             MAX_ITERATIONS = 3
             for step in range(MAX_ITERATIONS):
-                response = groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=messages,
-                    tools=MIRROR_TOOLS,
-                    tool_choice="auto",
-                    temperature=0.3
-                )
+                try:
+                    response = groq_client.chat.completions.create(
+                        model=MODEL_RESEARCHER,
+                        messages=messages,
+                        tools=MIRROR_TOOLS,
+                        tool_choice="auto",
+                        temperature=0.3
+                    )
+                except Exception as e:
+                    # 🛡️ GRACEFUL ERROR HANDLING: Catch Groq's XML/JSON parsing failure
+                    if "tool_use_failed" in str(e):
+                        print(f"[AGENT WARNING] Groq tool parser choked on Llama syntax. Exiting ReAct loop.")
+                        break # Break loop, proceed to final synthesis
+                    else:
+                        raise e # Re-raise if it's an API key or connection error
                 
                 resp_msg = response.choices[0].message
                 
-                # If no tool calls are generated, the agent is ready to answer. Break the loop.
+                # If no tools called, agent is ready to answer
                 if not resp_msg.tool_calls:
                     break
                     
                 messages.append(resp_msg)
                 
-                # Execute mapped tools dynamically
+                # Execute tools
                 for tool_call in resp_msg.tool_calls:
                     func_name = tool_call.function.name
                     if func_name in TOOL_REGISTRY:
@@ -203,16 +215,17 @@ DIRECTIVE:
             # Step out of loop: Force final JSON synthesis
             messages.append({"role": "system", "content": "Respond ONLY in this exact JSON format: {\"engine_response\": \"string\", \"system_state\": {\"valence\": float, \"arousal\": float}}"})
             response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=MODEL_RESEARCHER,
                 messages=messages,
                 response_format={"type": "json_object"},
                 temperature=0.4
             )
 
         else:
-            # REFLECTION MODE: High-EQ 70B model operation
+            # REFLECTION MODE
             system_prompt = f"""You are THE MIRROR.
 CREATOR: Rajeev Prakash Nath.
+CURRENT DATE: {current_date_str}
 CONTEXT: {history_context}
 STATE: V={decayed_v}, A={decayed_a}
 
@@ -220,7 +233,7 @@ DIRECTIVE: Reflect user thoughts. Casual. Under 50 words. Focus on deep emotiona
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
             
             response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=MODEL_MIRROR,
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
                 response_format={"type": "json_object"},
                 temperature=0.7
