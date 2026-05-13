@@ -1,8 +1,12 @@
 import os
 import json
 import math
+import glob
+import base64
+import subprocess
+import yt_dlp
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
@@ -44,6 +48,7 @@ DECAY_LAMBDA = 0.05
 EKV_CAPACITY = 5
 MODEL_RESEARCHER = "llama-3.3-70b-versatile"
 MODEL_MIRROR = "llama-3.1-8b-instant"
+MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # =================================================================
 # PRODUCTION TOOL REGISTRY
@@ -74,6 +79,10 @@ class InteractionRequest(BaseModel):
     user_id: str
     gossip_mode: bool = False 
 
+class FeedRequest(BaseModel):
+    youtube_url: str
+    user_id: str
+
 def send_instant_vibration(user_id, text):
     try:
         res = supabase.table("push_subscriptions").select("subscription_json").eq("user_id", user_id).execute()
@@ -87,10 +96,101 @@ def send_instant_vibration(user_id, text):
                 messaging.send(message)
     except: pass
 
+# =================================================================
+# BACKGROUND WORKER: MULTIMODAL DIGESTION & BATTERY MATH
+# =================================================================
+def encode_image(image_path):
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+def background_digest_reel(url: str, user_id: str):
+    temp_video = f"temp_vid_{user_id}.mp4"
+    try:
+        print(f"[{user_id}] 🧠 Starting background digestion of: {url}")
+        
+        # 1. Ingestion
+        ydl_opts = {'format': 'worstvideo[ext=mp4]+bestaudio[ext=m4a]/mp4', 'outtmpl': temp_video, 'quiet': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        # 2. Slicing
+        subprocess.run(["ffmpeg", "-i", temp_video, "-vf", "fps=1/10", f"frame_{user_id}_%03d.jpg", "-loglevel", "error", "-y"])
+
+        # 3. Vision Prep
+        frames = sorted(glob.glob(f"frame_{user_id}_*.jpg"))
+        if len(frames) > 5:
+            step = len(frames) / 5
+            frames = [frames[int(i * step)] for i in range(5)]
+
+        content_payload = [{"type": "text", "text": "Describe the technical concepts, UI, or actions happening in this sequence of frames."}]
+        for frame in frames:
+            base64_img = encode_image(frame)
+            content_payload.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}})
+
+        # 4. Vision Synthesis
+        vision_res = groq_client.chat.completions.create(
+            model=MODEL_VISION,
+            messages=[{"role": "user", "content": content_payload}],
+            temperature=0.3,
+            max_tokens=300
+        )
+        visual_context = vision_res.choices[0].message.content
+
+        # 5. Core Engine Update & Battery Fetch
+        state_res = supabase.table("user_cognitive_state").select("interest_matrix, battery_level").eq("user_id", user_id).execute()
+        cog_state = state_res.data[0] if state_res.data else {}
+        
+        current_matrix = cog_state.get("interest_matrix", {})
+        current_battery = int(cog_state.get("battery_level", 100))
+
+        # Merge Context
+        merge_prompt = f"""You are a cognitive engine. Update the user's JSON interest matrix based on this newly consumed video:
+Visual Context: {visual_context}
+Current Matrix: {json.dumps(current_matrix)}
+Output ONLY the merged, updated JSON matrix."""
+        
+        merge_res = groq_client.chat.completions.create(
+            model=MODEL_RESEARCHER,
+            messages=[{"role": "system", "content": merge_prompt}],
+            response_format={"type": "json_object"}
+        )
+        new_matrix = json.loads(merge_res.choices[0].message.content)
+
+        # 6. Battery Math (+5%, cap at 100)
+        new_battery = min(100, current_battery + 5)
+
+        # 7. Database Update
+        supabase.table("user_cognitive_state").update({
+            "interest_matrix": new_matrix,
+            "battery_level": new_battery,
+            "last_fed_at": "now()"
+        }).eq("user_id", user_id).execute()
+        
+        print(f"[{user_id}] ✅ Digestion complete. Battery restored to {new_battery}%.")
+
+    except Exception as e:
+        print(f"[{user_id}] ❌ Digestion failed: {e}")
+    finally:
+        if os.path.exists(temp_video): os.remove(temp_video)
+        for frame in glob.glob(f"frame_{user_id}_*.jpg"): os.remove(frame)
+
+
+# =================================================================
+# API ENDPOINTS
+# =================================================================
 @app.get("/")
 @app.head("/")
 async def health_check():
     return {"status": "alive", "message": "The Mirror is breathing."}
+
+@app.post("/api/feed")
+async def feed_reel(req: FeedRequest, background_tasks: BackgroundTasks):
+    # 🔒 STRICT SAFETY LOCK: Must be a YouTube Short
+    if "youtube.com/shorts" not in req.youtube_url:
+        raise HTTPException(status_code=400, detail="Only YouTube Shorts are digestible.")
+        
+    background_tasks.add_task(background_digest_reel, req.youtube_url, req.user_id)
+    return {"status": "digesting", "message": "Reel accepted. Initiating cognitive ingestion."}
 
 @app.post("/api/interact")
 async def interact(req: InteractionRequest):
@@ -181,22 +281,19 @@ DIRECTIVE:
                         temperature=0.3
                     )
                 except Exception as e:
-                    # 🛡️ GRACEFUL ERROR HANDLING: Catch Groq's XML/JSON parsing failure
                     if "tool_use_failed" in str(e):
                         print(f"[AGENT WARNING] Groq tool parser choked on Llama syntax. Exiting ReAct loop.")
-                        break # Break loop, proceed to final synthesis
+                        break
                     else:
-                        raise e # Re-raise if it's an API key or connection error
+                        raise e
                 
                 resp_msg = response.choices[0].message
                 
-                # If no tools called, agent is ready to answer
                 if not resp_msg.tool_calls:
                     break
                     
                 messages.append(resp_msg)
                 
-                # Execute tools
                 for tool_call in resp_msg.tool_calls:
                     func_name = tool_call.function.name
                     if func_name in TOOL_REGISTRY:
@@ -212,7 +309,6 @@ DIRECTIVE:
                             "content": tool_result
                         })
             
-            # Step out of loop: Force final JSON synthesis
             messages.append({"role": "system", "content": "Respond ONLY in this exact JSON format: {\"engine_response\": \"string\", \"system_state\": {\"valence\": float, \"arousal\": float}}"})
             response = groq_client.chat.completions.create(
                 model=MODEL_RESEARCHER,

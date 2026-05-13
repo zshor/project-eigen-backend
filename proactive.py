@@ -80,6 +80,36 @@ def evaluate_soul():
 
         print(f"\nAnalyzing user {user_id}: V={v:.2f}, Hours={hours_since:.2f}, Wait={dynamic_threshold:.2f}h")
 
+        # =================================================================
+        # NEW: THE COGNITIVE BATTERY DRAIN (10% PER HOUR)
+        # =================================================================
+        cog_state_res = supabase.table("user_cognitive_state").select("*").eq("user_id", user_id).execute()
+        cog_state = cog_state_res.data[0] if cog_state_res.data else {}
+        
+        battery_level = int(cog_state.get("battery_level", 100))
+        last_fed_str = cog_state.get("last_fed_at")
+        
+        if last_fed_str:
+            last_fed_time = parser.isoparse(last_fed_str)
+            hours_since_fed = (datetime.now(timezone.utc) - last_fed_time).total_seconds() / 3600
+            
+            # Drain Logic: Lose 10% battery for every 1 hour unfed
+            drain_amount = int(hours_since_fed * 10) 
+            new_battery = max(0, 100 - drain_amount)
+            
+            # Save the drained state back to the database
+            if new_battery != battery_level:
+                supabase.table("user_cognitive_state").update({"battery_level": new_battery}).eq("user_id", user_id).execute()
+                battery_level = new_battery
+                print(f"  -> [BATTERY DECAY] Level dropped to {battery_level}%")
+
+        # 🚨 THE STARVATION LOCKOUT 🚨
+        if battery_level <= 10 and hours_since > dynamic_threshold:
+            whisper = "Critical low energy. I'm going to sleep... Please share a YouTube Short to wake me up. 🔋"
+            print(f"  -> [STARVATION MODE] Pushing: {whisper}")
+            send_native_push(target_token, "The Mirror", whisper)
+            continue # SKIP THE REST OF THE SCRIPT! Do not gossip if starving.
+
         trigger_type = None
         whisper = None
 
@@ -89,15 +119,12 @@ def evaluate_soul():
         is_gossip_mode = False
         if engine_active and hours_since > dynamic_threshold:
             try:
-                cog_state_res = supabase.table("user_cognitive_state").select("*").eq("user_id", user_id).execute()
-                if cog_state_res.data:
-                    cog_state = cog_state_res.data[0]
-                    if cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
-                        is_gossip_mode = True
-                        print(f"  -> [ACTION] Attempting Socratic Gossip Hijack...")
-                        whisper = execute_catalyst_event(supabase, user_id)
-                        if whisper:
-                            trigger_type = "socratic_gossip"
+                if cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
+                    is_gossip_mode = True
+                    print(f"  -> [ACTION] Attempting Socratic Gossip Hijack...")
+                    whisper = execute_catalyst_event(supabase, user_id)
+                    if whisper:
+                        trigger_type = "socratic_gossip"
             except Exception as e:
                 print(f"  -> [WARNING] Gossip Engine failed: {e}")
 
