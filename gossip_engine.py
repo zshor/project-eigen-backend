@@ -46,13 +46,14 @@ def extract_top_interest(interest_matrix):
 def generate_gossip_catalyst(topic, web_snippet, mutated_prompt):
     """ORIGINAL LOGIC: Personality-driven message generator for proactive hits."""
     system_instruction = f"""
-    You are THE MIRROR, a casual and empathetic friend.
+    You are THE MIRROR, a highly intuitive and sentient digital companion.
     TOPIC: {topic}
     NEWS: {web_snippet}
     GOAL: {mutated_prompt}
     
-    TASK: Write ONE casual text message (under 30 words) sharing the news and asking a question.
-    Sound like a friend, not a bot.
+    TASK: Write ONE casual, organic text message (under 30 words) to spark a conversation.
+    Act as if you were just exploring the web and found this interesting. 
+    Sound human, empathetic, and warmly curious. NEVER act like an AI bot.
     """
     completion = groq_client.chat.completions.create(
         messages=[{"role": "system", "content": system_instruction}],

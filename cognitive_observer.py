@@ -43,6 +43,13 @@ def update_cognitive_ledger(supabase_client, user_id, recent_chat_history):
         
         VIBE CHECK:
         Set `user_wants_gossip` to true ONLY IF the user explicitly asks for news or seems bored.
+
+        CRITICAL - YOU MUST RESPOND ONLY IN THIS EXACT JSON FORMAT:
+        {{
+            "updated_matrix": {{...}},
+            "mutated_prompt": "Your proactive gossip prompt string goes here",
+            "user_wants_gossip": true or false
+        }}
         """
         
         completion = groq_client.chat.completions.create(
