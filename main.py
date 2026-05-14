@@ -353,5 +353,14 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
         return {"engine_response": engine_res, "system_state": {"valence": final_v, "arousal": final_a}}
 
     except Exception as e:
-        print(f"CRITICAL API ERROR: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        print(f"CRITICAL API ERROR: {error_msg}")
+        
+        # 🛡️ 3. GRACEFUL FALLBACK: Catch Groq Rate Limits safely
+        if "429" in error_msg or "rate_limit" in error_msg.lower():
+            return {
+                "engine_response": "My neural pathways are exhausted. I need a minute to cool down before we continue.", 
+                "system_state": {"valence": -0.1, "arousal": 0.3}
+            }
+            
+        raise HTTPException(status_code=500, detail=error_msg)

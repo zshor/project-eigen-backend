@@ -15,7 +15,10 @@ def fetch_web_currency(query):
         with DDGS() as ddgs:
             results = [r for r in ddgs.text(query, max_results=3)]
             if results:
-                return "\n".join([f"{r['title']}: {r['body']}" for r in results])
+                # 🛡️ TOKEN DIET FIX: Extract, combine, and hard-slice at 2000 characters (~500 tokens)
+                clean_context = "\n".join([f"{r['title']}: {r['body']}" for r in results])
+                optimized_context = clean_context[:2000]
+                return optimized_context
             return "No live results found for that query."
     except Exception as e:
         print(f"[DDG FAIL] {e}")
