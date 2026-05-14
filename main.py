@@ -1,10 +1,7 @@
 import os
 import json
 import math
-import glob
-import base64
-import subprocess
-import yt_dlp
+import requests
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -48,7 +45,6 @@ DECAY_LAMBDA = 0.05
 EKV_CAPACITY = 5
 MODEL_RESEARCHER = "llama-3.3-70b-versatile"
 MODEL_MIRROR = "llama-3.1-8b-instant"
-MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # =================================================================
 # PRODUCTION TOOL REGISTRY
@@ -97,57 +93,38 @@ def send_instant_vibration(user_id, text):
     except: pass
 
 # =================================================================
-# BACKGROUND WORKER: MULTIMODAL DIGESTION & BATTERY MATH
+# BACKGROUND WORKER: METADATA DIGESTION & BATTERY MATH
 # =================================================================
-def encode_image(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
-
 def background_digest_reel(url: str, user_id: str):
-    temp_video = f"temp_vid_{user_id}.mp4"
     try:
-        print(f"[{user_id}] 🧠 Starting background digestion of: {url}")
+        print(f"[{user_id}] 🧠 Starting metadata digestion of: {url}")
         
-        # 1. Ingestion
-        ydl_opts = {'format': 'worstvideo[ext=mp4]+bestaudio[ext=m4a]/mp4', 'outtmpl': temp_video, 'quiet': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        # 1. Fetch Metadata using YouTube's official oEmbed API (No blocks, No cookies needed!)
+        oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+        response = requests.get(oembed_url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            video_title = data.get("title", "Unknown Title")
+            author_name = data.get("author_name", "Unknown Creator")
+            visual_context = f"The user watched a YouTube video titled '{video_title}' created by '{author_name}'."
+            print(f"[{user_id}] 👁️ Metadata extracted: {video_title}")
+        else:
+            visual_context = "The user watched a YouTube video, but the specific title could not be extracted."
+            print(f"[{user_id}] ⚠️ Metadata fallback triggered.")
 
-        # 2. Slicing
-        subprocess.run(["ffmpeg", "-i", temp_video, "-vf", "fps=1/10", f"frame_{user_id}_%03d.jpg", "-loglevel", "error", "-y"])
-
-        # 3. Vision Prep
-        frames = sorted(glob.glob(f"frame_{user_id}_*.jpg"))
-        if len(frames) > 5:
-            step = len(frames) / 5
-            frames = [frames[int(i * step)] for i in range(5)]
-
-        content_payload = [{"type": "text", "text": "Describe the technical concepts, UI, or actions happening in this sequence of frames."}]
-        for frame in frames:
-            base64_img = encode_image(frame)
-            content_payload.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}})
-
-        # 4. Vision Synthesis
-        vision_res = groq_client.chat.completions.create(
-            model=MODEL_VISION,
-            messages=[{"role": "user", "content": content_payload}],
-            temperature=0.3,
-            max_tokens=300
-        )
-        visual_context = vision_res.choices[0].message.content
-
-        # 5. Core Engine Update & Battery Fetch
+        # 2. Core Engine Update & Battery Fetch
         state_res = supabase.table("user_cognitive_state").select("interest_matrix, battery_level").eq("user_id", user_id).execute()
         cog_state = state_res.data[0] if state_res.data else {}
         
         current_matrix = cog_state.get("interest_matrix", {})
         current_battery = int(cog_state.get("battery_level", 100))
 
-        # Merge Context
-        merge_prompt = f"""You are a cognitive engine. Update the user's JSON interest matrix based on this newly consumed video:
-Visual Context: {visual_context}
+        # 3. Merge Context (Now using Researcher model instead of Vision model)
+        merge_prompt = f"""You are a cognitive engine. Update the user's JSON interest matrix based on this newly consumed video metadata:
+Content Watched: {visual_context}
 Current Matrix: {json.dumps(current_matrix)}
-Output ONLY the merged, updated JSON matrix."""
+Output ONLY the merged, updated JSON matrix. Keep it concise."""
         
         merge_res = groq_client.chat.completions.create(
             model=MODEL_RESEARCHER,
@@ -156,10 +133,10 @@ Output ONLY the merged, updated JSON matrix."""
         )
         new_matrix = json.loads(merge_res.choices[0].message.content)
 
-        # 6. Battery Math (+5%, cap at 100)
+        # 4. Battery Math (+5%, cap at 100)
         new_battery = min(100, current_battery + 5)
 
-        # 7. Database Update
+        # 5. Database Update
         supabase.table("user_cognitive_state").update({
             "interest_matrix": new_matrix,
             "battery_level": new_battery,
@@ -169,28 +146,19 @@ Output ONLY the merged, updated JSON matrix."""
         print(f"[{user_id}] ✅ Digestion complete. Battery restored to {new_battery}%.")
 
     except Exception as e:
-        print(f"[{user_id}] ❌ Digestion failed (Likely YouTube block): {e}")
-        # 🛡️ THE FAILSAFE: YouTube blocked the download, but we MUST give the user battery to prevent deadlock.
+        print(f"[{user_id}] ❌ Digestion failed: {e}")
+        # 🛡️ THE FAILSAFE: Give battery anyway
         try:
-            print(f"[{user_id}] 🛡️ Triggering emergency battery override...")
             state_res = supabase.table("user_cognitive_state").select("battery_level").eq("user_id", user_id).execute()
             current_battery = int(state_res.data[0].get("battery_level", 100)) if state_res.data else 100
-            
-            # Boost battery by 5% anyway so the user can wake the Mirror up
             new_battery = min(100, current_battery + 5)
-            
-            # Update only battery and last_fed_at (matrix remains unchanged)
             supabase.table("user_cognitive_state").update({
                 "battery_level": new_battery,
                 "last_fed_at": "now()"
             }).eq("user_id", user_id).execute()
             print(f"[{user_id}] ⚡ Failsafe successful. Battery bumped to {new_battery}%.")
         except Exception as failsafe_error:
-            print(f"[{user_id}] 🚨 Failsafe also crashed: {failsafe_error}")
-            
-    finally:
-        if os.path.exists(temp_video): os.remove(temp_video)
-        for frame in glob.glob(f"frame_{user_id}_*.jpg"): os.remove(frame)
+            pass
 
 
 # =================================================================
@@ -203,9 +171,9 @@ async def health_check():
 
 @app.post("/api/feed")
 async def feed_reel(req: FeedRequest, background_tasks: BackgroundTasks):
-    # 🔒 STRICT SAFETY LOCK: Must be a YouTube Short
-    if "youtube.com/shorts" not in req.youtube_url:
-        raise HTTPException(status_code=400, detail="Only YouTube Shorts are digestible.")
+    # 🔒 STRICT SAFETY LOCK: Must be a YouTube URL
+    if "youtube.com" not in req.youtube_url and "youtu.be" not in req.youtube_url:
+        raise HTTPException(status_code=400, detail="Only YouTube links are digestible.")
         
     background_tasks.add_task(background_digest_reel, req.youtube_url, req.user_id)
     return {"status": "digesting", "message": "Reel accepted. Initiating cognitive ingestion."}
