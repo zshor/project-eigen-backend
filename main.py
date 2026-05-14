@@ -169,7 +169,25 @@ Output ONLY the merged, updated JSON matrix."""
         print(f"[{user_id}] ✅ Digestion complete. Battery restored to {new_battery}%.")
 
     except Exception as e:
-        print(f"[{user_id}] ❌ Digestion failed: {e}")
+        print(f"[{user_id}] ❌ Digestion failed (Likely YouTube block): {e}")
+        # 🛡️ THE FAILSAFE: YouTube blocked the download, but we MUST give the user battery to prevent deadlock.
+        try:
+            print(f"[{user_id}] 🛡️ Triggering emergency battery override...")
+            state_res = supabase.table("user_cognitive_state").select("battery_level").eq("user_id", user_id).execute()
+            current_battery = int(state_res.data[0].get("battery_level", 100)) if state_res.data else 100
+            
+            # Boost battery by 5% anyway so the user can wake the Mirror up
+            new_battery = min(100, current_battery + 5)
+            
+            # Update only battery and last_fed_at (matrix remains unchanged)
+            supabase.table("user_cognitive_state").update({
+                "battery_level": new_battery,
+                "last_fed_at": "now()"
+            }).eq("user_id", user_id).execute()
+            print(f"[{user_id}] ⚡ Failsafe successful. Battery bumped to {new_battery}%.")
+        except Exception as failsafe_error:
+            print(f"[{user_id}] 🚨 Failsafe also crashed: {failsafe_error}")
+            
     finally:
         if os.path.exists(temp_video): os.remove(temp_video)
         for frame in glob.glob(f"frame_{user_id}_*.jpg"): os.remove(frame)
