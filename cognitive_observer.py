@@ -16,6 +16,9 @@ def update_cognitive_ledger(supabase_client, user_id, recent_chat_history):
         current_matrix = state_data.get("interest_matrix", {})
         manual_on = state_data.get("manual_gossip_toggle", False)
 
+        # OPTIMIZATION: Safe truncation of the JSON matrix to prevent token explosions
+        safe_matrix_str = json.dumps(current_matrix)[:1500]
+
         # 2. The Multi-Domain System Prompt (Full Logic Restoration)
         system_instruction = f"""
         You are an autonomous profiling algorithm mapping the user's mind into a Multi-Domain JSON Tree.
@@ -23,7 +26,7 @@ def update_cognitive_ledger(supabase_client, user_id, recent_chat_history):
         MANUAL RESEARCH MODE: {"ACTIVE" if manual_on else "INACTIVE"}
         
         CURRENT INTEREST MATRIX:
-        {json.dumps(current_matrix)}
+        {safe_matrix_str}
         
         RECENT CHAT:
         "{recent_chat_history}"

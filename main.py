@@ -99,7 +99,7 @@ def background_digest_reel(url: str, user_id: str):
     try:
         print(f"[{user_id}] 🧠 Starting metadata digestion of: {url}")
         
-        # 1. Fetch Metadata using YouTube's official oEmbed API (No blocks, No cookies needed!)
+        # 1. Fetch Metadata using YouTube's official oEmbed API
         oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
         response = requests.get(oembed_url, timeout=10)
         
@@ -120,7 +120,7 @@ def background_digest_reel(url: str, user_id: str):
         current_matrix = cog_state.get("interest_matrix", {})
         current_battery = int(cog_state.get("battery_level", 100))
 
-        # 3. Merge Context (Now using Researcher model instead of Vision model)
+        # 3. Merge Context (Using big model for reasoning)
         merge_prompt = f"""You are a cognitive engine. Update the user's JSON interest matrix based on this newly consumed video metadata:
 Content Watched: {visual_context}
 Current Matrix: {json.dumps(current_matrix)}
@@ -256,7 +256,7 @@ DIRECTIVE:
                 {"role": "user", "content": req.message}
             ]
 
-            MAX_ITERATIONS = 3
+            MAX_ITERATIONS = 2 # OPTIMIZED to save rate limit
             for step in range(MAX_ITERATIONS):
                 try:
                     response = groq_client.chat.completions.create(
@@ -264,7 +264,8 @@ DIRECTIVE:
                         messages=messages,
                         tools=MIRROR_TOOLS,
                         tool_choice="auto",
-                        temperature=0.3
+                        temperature=0.2, # Lowered for strict tool accuracy
+                        max_tokens=400
                     )
                 except Exception as e:
                     if "tool_use_failed" in str(e):
@@ -304,7 +305,7 @@ DIRECTIVE:
             )
 
         else:
-            # REFLECTION MODE
+            # REFLECTION MODE (RESTORED TO BIG MODEL)
             system_prompt = f"""You are THE MIRROR, a deeply empathetic digital twin created by Rajeev Prakash Nath.
 CURRENT DATE: {current_date_str}
 RECENT MEMORY: {history_context}
@@ -317,7 +318,7 @@ DIRECTIVE:
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
             
             response = groq_client.chat.completions.create(
-                model=MODEL_MIRROR,
+                model=MODEL_RESEARCHER, # <--- Restored to the 70B model for deep empathy
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
                 response_format={"type": "json_object"},
                 temperature=0.7
