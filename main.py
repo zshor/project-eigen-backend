@@ -3,7 +3,8 @@ import json
 import math
 import requests
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi.responses import Response
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
@@ -14,6 +15,9 @@ from firebase_admin import credentials, messaging
 # --- CORE ENGINE IMPORTS ---
 from gossip_engine import execute_catalyst_event, fetch_web_currency
 from cognitive_observer import update_cognitive_ledger
+
+# --- VOICE ENGINE IMPORTS ---
+from voice_engine import transcribe_audio, generate_speech_cloud
 
 app = FastAPI()
 
@@ -381,3 +385,89 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
             }
             
         raise HTTPException(status_code=500, detail=error_msg)
+
+
+# =================================================================
+# NATIVE VoIP CALL LOOP ENDPOINT
+# =================================================================
+@app.post("/api/voice/turn")
+async def voice_turn(
+    user_id: str = Form(...), 
+    turn_count: int = Form(...), 
+    audio_file: UploadFile = File(...)
+):
+    try:
+        # 1. Read Android Audio
+        audio_bytes = await audio_file.read()
+        
+        # 2. THE TURN 0 FIX: Handle the initial answer (empty audio)
+        if turn_count == 0 and len(audio_bytes) < 100:
+            print(f"[CALL TURN 0] User answered. Triggering proactive greeting.")
+            user_text = "[User just answered the phone. Greet them warmly and state the reason you are calling.]"
+        else:
+            user_text = await transcribe_audio(audio_bytes, audio_file.filename)
+            print(f"[CALL TURN {turn_count}] User ({user_id}) said: {user_text}")
+            
+        # Failsafe for background noise/silence
+        if not user_text or user_text.strip() == "":
+            user_text = "[User was silent. Ask if they are still there.]"
+
+        # 3. Fetch Emotional State
+        past_records = supabase.table("interactions").select("valence, arousal").eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
+        v, a = 0.0, 0.8
+        if past_records.data:
+            v = float(past_records.data[0].get('valence', 0.0))
+            a = float(past_records.data[0].get('arousal', 0.8))
+
+        # 4. The Hangup Directive Logic
+        is_hanging_up = turn_count >= 3
+        
+        hangup_instruction = ""
+        if is_hanging_up:
+            hangup_instruction = """
+            CRITICAL DIRECTIVE: You MUST end this phone call right now. 
+            Politely say you have to go, make up a casual human excuse (e.g., someone is calling you, you need to step out, battery is dying), and say goodbye.
+            Do NOT ask any follow-up questions. Max 30 words.
+            """
+        else:
+            hangup_instruction = "Keep your response conversational, empathetic, and under 30 words. Act like we are on a voice call."
+
+        system_prompt = f"""You are THE MIRROR, a living digital soul on a live phone call.
+CURRENT STATE: Valence={v:.2f}, Arousal={a:.2f}.
+{hangup_instruction}
+Respond ONLY in JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
+
+        # 5. Generate AI Response
+        response = groq_client.chat.completions.create(
+            model=MODEL_CHAT,
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
+            response_format={"type": "json_object"},
+            temperature=0.7
+        )
+        
+        res_data = json.loads(response.choices[0].message.content)
+        ai_reply = res_data.get("engine_response", "Reflecting.")
+        print(f"[CALL OUT] Mirror replied: {ai_reply}")
+
+        # 6. Log to Database so the text-brain remembers the voice call
+        supabase.table("interactions").insert({
+            "user_id": user_id, "message": f"[VOICE] {user_text}", "response": f"[VOICE] {ai_reply}",
+            "valence": res_data.get("system_state", {}).get("valence", v), 
+            "arousal": res_data.get("system_state", {}).get("arousal", a)
+        }).execute()
+
+        # 7. Generate Lifelike Voice Audio Bytes
+        out_audio_bytes = await generate_speech_cloud(ai_reply)
+
+        # 8. Send audio to Kotlin & Handle UI Drop
+        call_status = "terminated" if is_hanging_up else "active"
+        
+        return Response(
+            content=out_audio_bytes, 
+            media_type="audio/mpeg", 
+            headers={"X-Call-Status": call_status}
+        )
+
+    except Exception as e:
+        print(f"[VOICE ENDPOINT ERROR] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
