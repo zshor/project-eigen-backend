@@ -9,8 +9,9 @@ from groq import Groq
 import firebase_admin
 from firebase_admin import credentials, messaging
 
-# --- GOSSIP ENGINE IMPORT ---
+# --- GOSSIP ENGINE & COGNITIVE IMPORTS ---
 from gossip_engine import execute_catalyst_event
+from cognitive_observer import update_cognitive_ledger
 
 # 1. SETUP
 supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
@@ -81,7 +82,17 @@ def evaluate_soul():
         print(f"\nAnalyzing user {user_id}: V={v:.2f}, Hours={hours_since:.2f}, Wait={dynamic_threshold:.2f}h")
 
         # =================================================================
-        # NEW: THE COGNITIVE BATTERY DRAIN (10% PER HOUR)
+        # NEW: THE DREAM STATE (BATCH COGNITIVE UPDATE)
+        # =================================================================
+        if hours_since > dynamic_threshold:
+            print(f"  -> [DREAM STATE] User is offline. Batch updating Cognitive Ledger...")
+            memory_transcript = ""
+            for chat in reversed(chats.data):
+                memory_transcript += f"User: {chat['message']}\nMirror: {chat['response']}\n"
+            update_cognitive_ledger(supabase, user_id, memory_transcript)
+
+        # =================================================================
+        # THE COGNITIVE BATTERY DRAIN (10% PER HOUR)
         # =================================================================
         cog_state_res = supabase.table("user_cognitive_state").select("*").eq("user_id", user_id).execute()
         cog_state = cog_state_res.data[0] if cog_state_res.data else {}
@@ -114,12 +125,13 @@ def evaluate_soul():
         whisper = None
 
         # =================================================================
-        # 1. PRIMARY INTERCEPT: GOSSIP (MOOD-INDEPENDENT)
+        # 1. PRIMARY INTERCEPT: GOSSIP (MOOD-INDEPENDENT) - INTENT BUG FIXED
         # =================================================================
         is_gossip_mode = False
         if engine_active and hours_since > dynamic_threshold:
             try:
-                if cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
+                # ---> THE FIX: Checking internal intent AND UI toggle <---
+                if cog_state.get("user_wants_gossip") or cog_state.get("current_mode") == "SOCRATIC_GOSSIP":
                     is_gossip_mode = True
                     print(f"  -> [ACTION] Attempting Socratic Gossip Hijack...")
                     whisper = execute_catalyst_event(supabase, user_id)

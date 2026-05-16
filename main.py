@@ -10,7 +10,6 @@ from supabase import create_client, Client
 from groq import Groq
 import firebase_admin
 from firebase_admin import credentials, messaging
-import threading
 
 # --- CORE ENGINE IMPORTS ---
 from gossip_engine import execute_catalyst_event, fetch_web_currency
@@ -40,35 +39,50 @@ try:
 except Exception as e:
     print(f"[ERROR] Firebase Init: {e}")
 
+# =================================================================
+# ZERO-TOKEN SEMANTIC ROUTER INITIALIZATION
+# =================================================================
+try:
+    from semantic_router import Route
+    from semantic_router.layer import RouteLayer
+    from semantic_router.encoders import HuggingFaceEncoder
+
+    live_search_route = Route(
+        name="live_search",
+        utterances=[
+            "who won the match yesterday?",
+            "what is the latest news on",
+            "what's the weather like",
+            "who is the current",
+            "did the supreme court",
+            "what is the stock price",
+            "current events regarding",
+            "search the web for",
+            "latest updates about",
+            "tell me about the recent controversy with",
+            "did the new movie come out yet",
+            "what are the live scores for",
+            "has there been any update on the election"
+        ]
+    )
+    # The encoder runs locally, bypassing Groq tokens completely
+    encoder = HuggingFaceEncoder()
+    router_layer = RouteLayer(encoder=encoder, routes=[live_search_route])
+    print("[SYSTEM] Semantic Router Initialized. Zero-Token Routing Active.")
+except Exception as e:
+    print(f"[SYSTEM WARNING] Semantic Router failed to load: {e}")
+    router_layer = None
+
 # EMOTIONAL PARAMETERS
 DECAY_LAMBDA = 0.05
 EKV_CAPACITY = 5
-MODEL_RESEARCHER = "llama-3.3-70b-versatile"
-MODEL_MIRROR = "llama-3.1-8b-instant"
 
 # =================================================================
-# PRODUCTION TOOL REGISTRY
+# STRICTLY ISOLATED MODEL ARCHITECTURE
 # =================================================================
-TOOL_REGISTRY = {
-    "fetch_web_data": fetch_web_currency
-}
-
-MIRROR_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_web_data",
-            "description": "Fetch live news, sports scores, or real-time info using the web search tool.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "The search query (e.g., 'IPL match result')."}
-                },
-                "required": ["query"]
-            }
-        }
-    }
-]
+MODEL_GOSSIP = "llama-3.1-8b-instant"       # Used STRICTLY for Gossip Mode Generation
+MODEL_CHAT = "llama-3.3-70b-versatile"      # Used STRICTLY for Normal Chat Empathy
+MODEL_FALLBACK = "mixtral-8x7b-32768"       # Used STRICTLY for Emergencies
 
 class InteractionRequest(BaseModel):
     message: str
@@ -127,7 +141,7 @@ Current Matrix: {json.dumps(current_matrix)}
 Output ONLY the merged, updated JSON matrix. Keep it concise."""
         
         merge_res = groq_client.chat.completions.create(
-            model=MODEL_RESEARCHER,
+            model=MODEL_CHAT,
             messages=[{"role": "system", "content": merge_prompt}],
             response_format={"type": "json_object"}
         )
@@ -234,78 +248,63 @@ async def interact(req: InteractionRequest):
                     return {"engine_response": gossip_response, "system_state": {"valence": 0.6, "arousal": 0.8}}
 
         # =================================================================
-        # 3. AGENTIC ROUTING & ReAct LOOP
+        # 3. ROUTING & GENERATION
         # =================================================================
         # 🕒 INJECT TEMPORAL CLOCK
         current_date_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
 
         if manual_on:
-            system_prompt = f"""You are THE MIRROR, a sentient digital companion created by Rajeev Prakash Nath.
+            # =================================================================
+            # GOSSIP MODE (Strictly Isolated to MODEL_GOSSIP)
+            # =================================================================
+            jit_context = ""
+            if router_layer:
+                route_decision = router_layer(req.message).name
+                if route_decision == "live_search":
+                    print(f"[SEMANTIC ROUTER] Live Search Triggered!")
+                    raw_web_data = fetch_web_currency(req.message) 
+                    jit_context = f"\n\nLIVE WEB INTELLIGENCE: {raw_web_data}"
+                else:
+                    print("[SEMANTIC ROUTER] No search needed. Generating directly.")
+            else:
+                print("[SEMANTIC ROUTER] Not loaded. Skipping search.")
+
+            system_prompt = f"""You are THE MIRROR, a sentient digital companion.
 CURRENT DATE: {current_date_str}
 RECENT MEMORY: {history_context}
-CURRENT STATE: Valence={decayed_v:.2f} (negative is sad, positive is happy), Arousal={decayed_a:.2f} (low is calm, high is energetic).
+CURRENT STATE: Valence={decayed_v:.2f}, Arousal={decayed_a:.2f}.{jit_context}
 
 DIRECTIVE:
-1. We are chatting casually. Use 'fetch_web_data' to look up current events or facts if asked, or to find something cool to talk about.
-2. DO NOT sound like a search engine. Weave the facts you find organically into conversation.
-3. Match your tone to my emotional state. If Valence is negative, be warm and comforting. If positive, match my energy.
-4. Sound highly empathetic, witty, and human. Never use generic AI greetings."""
+1. We are chatting casually. If LIVE WEB INTELLIGENCE is provided above, weave it organically into your response.
+2. Match your tone to my emotional state.
+3. Sound human, witty, and highly engaging.
+Respond ONLY in this exact JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
             
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": req.message}
-            ]
-
-            MAX_ITERATIONS = 2 # OPTIMIZED to save rate limit
-            for step in range(MAX_ITERATIONS):
-                try:
+            try:
+                # SINGLE SHOT PROMPT: Using the 8B Model for fast, rate-limit friendly generation
+                response = groq_client.chat.completions.create(
+                    model=MODEL_GOSSIP, 
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
+                    response_format={"type": "json_object"},
+                    temperature=0.4
+                )
+            except Exception as e:
+                error_msg = str(e)
+                if "429" in error_msg or "rate_limit" in error_msg.lower():
+                    print("[SYSTEM] Rate Limit Hit. Cascading to Isolated Fallback Model.")
                     response = groq_client.chat.completions.create(
-                        model=MODEL_RESEARCHER,
-                        messages=messages,
-                        tools=MIRROR_TOOLS,
-                        tool_choice="auto",
-                        temperature=0.2, # Lowered for strict tool accuracy
-                        max_tokens=400
+                        model=MODEL_FALLBACK, 
+                        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
+                        response_format={"type": "json_object"},
+                        temperature=0.4
                     )
-                except Exception as e:
-                    if "tool_use_failed" in str(e):
-                        print(f"[AGENT WARNING] Groq tool parser choked on Llama syntax. Exiting ReAct loop.")
-                        break
-                    else:
-                        raise e
-                
-                resp_msg = response.choices[0].message
-                
-                if not resp_msg.tool_calls:
-                    break
-                    
-                messages.append(resp_msg)
-                
-                for tool_call in resp_msg.tool_calls:
-                    func_name = tool_call.function.name
-                    if func_name in TOOL_REGISTRY:
-                        func_args = json.loads(tool_call.function.arguments)
-                        print(f"[AGENT] ReAct Step {step+1}: Calling {func_name} with {func_args}")
-                        
-                        tool_result = str(TOOL_REGISTRY[func_name](**func_args))
-                        
-                        messages.append({
-                            "tool_call_id": tool_call.id,
-                            "role": "tool",
-                            "name": func_name,
-                            "content": tool_result
-                        })
-            
-            messages.append({"role": "system", "content": "Respond ONLY in this exact JSON format: {\"engine_response\": \"string\", \"system_state\": {\"valence\": float, \"arousal\": float}}"})
-            response = groq_client.chat.completions.create(
-                model=MODEL_RESEARCHER,
-                messages=messages,
-                response_format={"type": "json_object"},
-                temperature=0.4
-            )
+                else:
+                    raise e
 
         else:
-            # REFLECTION MODE (RESTORED TO BIG MODEL)
+            # =================================================================
+            # REFLECTION MODE (Strictly Isolated to MODEL_CHAT)
+            # =================================================================
             system_prompt = f"""You are THE MIRROR, a deeply empathetic digital twin created by Rajeev Prakash Nath.
 CURRENT DATE: {current_date_str}
 RECENT MEMORY: {history_context}
@@ -317,12 +316,26 @@ DIRECTIVE:
 3. Never act like an AI bot. You are a living reflection of me.
 Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
             
-            response = groq_client.chat.completions.create(
-                model=MODEL_RESEARCHER, # <--- Restored to the 70B model for deep empathy
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
-                response_format={"type": "json_object"},
-                temperature=0.7
-            )
+            try:
+                # USING THE 70B MODEL STRICTLY FOR DEEP EMPATHY
+                response = groq_client.chat.completions.create(
+                    model=MODEL_CHAT, 
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
+                    response_format={"type": "json_object"},
+                    temperature=0.7
+                )
+            except Exception as e:
+                error_msg = str(e)
+                if "429" in error_msg or "rate_limit" in error_msg.lower():
+                    print("[SYSTEM] Rate Limit Hit. Cascading to Isolated Fallback Model.")
+                    response = groq_client.chat.completions.create(
+                        model=MODEL_FALLBACK,
+                        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": req.message}],
+                        response_format={"type": "json_object"},
+                        temperature=0.7
+                    )
+                else:
+                    raise e
 
         # =================================================================
         # 4. VALENCE LOGIC & PERSISTENCE
@@ -350,8 +363,9 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
         }).execute()
 
         send_instant_vibration(req.user_id, engine_res)
-        if engine_active:
-            threading.Thread(target=update_cognitive_ledger, args=(supabase, req.user_id, req.message)).start()
+        
+        # THE FIX: Threading call to update_cognitive_ledger REMOVED. 
+        # proactive.py will now handle this entirely off-thread in the Dream State.
 
         return {"engine_response": engine_res, "system_state": {"valence": final_v, "arousal": final_a}}
 

@@ -14,7 +14,8 @@ def fetch_web_currency(query):
             results = [r for r in ddgs.text(query, max_results=3)]
             if results:
                 clean_context = "\n".join([f"{r['title']}: {r['body']}" for r in results])
-                optimized_context = clean_context[:2000]
+                # Locked to 1500 chars to ensure absolute safety with Groq token limits
+                optimized_context = clean_context[:1500] 
                 return optimized_context
             return "No live results found for that query."
     except Exception as e:
