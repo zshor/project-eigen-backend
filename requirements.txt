@@ -78,3 +78,6 @@ zstandard==0.25.0
 google-genai==2.0.1
 ddgs
 edge-tts
+python-multipart
+semantic-router
+edge-tts
