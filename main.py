@@ -48,8 +48,17 @@ except Exception as e:
 # =================================================================
 try:
     from semantic_router import Route
-    from semantic_router.layer import RouteLayer
     from semantic_router.encoders import HuggingFaceEncoder
+    
+    # 🌟 THE FIX: Version-agnostic import block
+    # This guarantees the router loads regardless of which version Render installs
+    try:
+        from semantic_router import RouteLayer
+    except ImportError:
+        try:
+            from semantic_router.routers import SemanticRouter as RouteLayer
+        except ImportError:
+            from semantic_router.layer import RouteLayer
 
     live_search_route = Route(
         name="live_search",
