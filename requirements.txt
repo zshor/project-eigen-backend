@@ -77,7 +77,7 @@ yarl==1.23.0
 zstandard==0.25.0
 google-genai==2.0.1
 ddgs
-edge-tts
 python-multipart
-semantic-router
+semantic-router[local]==0.0.20
+transformers
 edge-tts
