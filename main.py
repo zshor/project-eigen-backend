@@ -44,14 +44,13 @@ except Exception as e:
     print(f"[ERROR] Firebase Init: {e}")
 
 # =================================================================
-# ZERO-TOKEN SEMANTIC ROUTER INITIALIZATION
+# ZERO-TOKEN SEMANTIC ROUTER INITIALIZATION (ONNX LOW-RAM)
 # =================================================================
 try:
     from semantic_router import Route
-    from semantic_router.encoders import HuggingFaceEncoder
+    from semantic_router.encoders import FastEmbedEncoder
     
-    # 🌟 THE FIX: Version-agnostic import block
-    # This guarantees the router loads regardless of which version Render installs
+    # Version-agnostic import block
     try:
         from semantic_router import RouteLayer
     except ImportError:
@@ -78,10 +77,10 @@ try:
             "has there been any update on the election"
         ]
     )
-    # The encoder runs locally, bypassing Groq tokens completely
-    encoder = HuggingFaceEncoder()
+    # The ONNX encoder runs locally with extremely low memory footprint
+    encoder = FastEmbedEncoder(name="BAAI/bge-small-en-v1.5")
     router_layer = RouteLayer(encoder=encoder, routes=[live_search_route])
-    print("[SYSTEM] Semantic Router Initialized. Zero-Token Routing Active.")
+    print("[SYSTEM] Semantic Router Initialized. Low-RAM ONNX Routing Active.")
 except Exception as e:
     print(f"[SYSTEM WARNING] Semantic Router failed to load: {e}")
     router_layer = None
