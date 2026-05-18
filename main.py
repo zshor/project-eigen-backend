@@ -79,7 +79,18 @@ try:
     )
     # The ONNX encoder runs locally with extremely low memory footprint
     encoder = FastEmbedEncoder(name="BAAI/bge-small-en-v1.5")
-    router_layer = RouteLayer(encoder=encoder, routes=[live_search_route])
+    
+    # THE FIX: Support for newer versions explicitly syncing the index
+    try:
+        router_layer = RouteLayer(encoder=encoder, routes=[live_search_route], auto_sync="local")
+    except TypeError:
+        # Fallback if Render installs an older version that doesn't support the kwarg
+        router_layer = RouteLayer(encoder=encoder, routes=[live_search_route])
+        
+    # Force the sync if the method exists
+    if hasattr(router_layer, "sync"):
+        router_layer.sync(sync_mode="local")
+        
     print("[SYSTEM] Semantic Router Initialized. Low-RAM ONNX Routing Active.")
 except Exception as e:
     print(f"[SYSTEM WARNING] Semantic Router failed to load: {e}")
@@ -485,3 +496,4 @@ Respond ONLY in JSON format: {{"engine_response": "string", "system_state": {{"v
     except Exception as e:
         print(f"[VOICE ENDPOINT ERROR] {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
