@@ -8,10 +8,10 @@ async def transcribe_audio(file_bytes: bytes, filename="audio.m4a") -> str:
     """Instantly turns Android audio into text using Groq Whisper."""
     try:
         file_tuple = (filename, file_bytes)
+        # 🛡️ THE FIX: Removed language="en" to allow Whisper to auto-detect Hindi/Hinglish!
         transcription = groq_client.audio.transcriptions.create(
             file=file_tuple,
-            model="whisper-large-v3",
-            language="en"
+            model="whisper-large-v3"
         )
         return transcription.text.strip()
     except Exception as e:
@@ -24,8 +24,8 @@ async def generate_speech_cloud(text: str) -> bytes:
         return b""
 
     try:
-        # 'en-US-AriaNeural' is warm and empathetic. 
-        communicate = edge_tts.Communicate(text, "en-US-AriaNeural")
+        # 🛡️ THE FIX: 'hi-IN-SwaraNeural' is the native Hindi Female voice. 
+        communicate = edge_tts.Communicate(text, "hi-IN-SwaraNeural")
         
         audio_bytes = b""
         async for chunk in communicate.stream():
