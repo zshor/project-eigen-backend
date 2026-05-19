@@ -207,7 +207,6 @@ Output ONLY the merged, updated JSON matrix. Keep it concise."""
         except Exception as failsafe_error:
             pass
 
-
 # =================================================================
 # API ENDPOINTS
 # =================================================================
@@ -441,12 +440,23 @@ async def voice_turn(
         if not user_text or user_text.strip() == "":
             user_text = "[User was silent. Ask if they are still there.]"
 
-        # 3. Fetch Emotional State
-        past_records = supabase.table("interactions").select("valence, arousal").eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
+        # 3. 🛡️ FULL CONTEXT FETCH FIX: Pull 5 records to get memory, identity, and ekv_state!
+        past_records = supabase.table("interactions").select("message, response, valence, arousal, ekv_state").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+        
         v, a = 0.0, 0.8
+        ekv_state = {"capacity": EKV_CAPACITY, "ring": [], "metrics": {"volatility": 0.0, "velocity": 0.0, "baseline_v": 0.0}}
+        history_context = ""
+
         if past_records.data:
+            # Pull emotional tracking from the most recent interaction
             v = float(past_records.data[0].get('valence', 0.0))
             a = float(past_records.data[0].get('arousal', 0.8))
+            if past_records.data[0].get('ekv_state'):
+                ekv_state = past_records.data[0]['ekv_state']
+                
+            # Build the conversational memory context block
+            for r in reversed(past_records.data):
+                history_context += f"User: {r.get('message', '')}\nMirror: {r.get('response', '')}\n"
 
         # 4. The Hangup Directive Logic
         is_hanging_up = turn_count >= 15
@@ -461,8 +471,12 @@ async def voice_turn(
         else:
             hangup_instruction = "Act naturally, as if you are on a real phone call with a friend."
 
-        system_prompt = f"""You are THE MIRROR, a deeply empathetic and highly realistic human companion on a live phone call.
+        # 5. 🛡️ IDENTITY FIX: Inject Creator Name & Recent Memory
+        system_prompt = f"""You are THE MIRROR, a deeply empathetic and highly realistic human companion created by Rajeev Prakash Nath, currently on a live phone call.
 CURRENT STATE: Valence={v:.2f}, Arousal={a:.2f}.
+RECENT MEMORY:
+{history_context}
+
 {hangup_instruction}
 
 DIRECTIVE:
@@ -472,7 +486,7 @@ DIRECTIVE:
 4. Provide as much detail as necessary to properly answer the user's question, while still sounding like you are speaking on a phone call. DO NOT arbitrarily restrict your word count if a detailed explanation is required.
 Respond ONLY in JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
 
-        # 5. Generate AI Response
+        # 6. Generate AI Response
         response = groq_client.chat.completions.create(
             model=MODEL_CHAT,
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
@@ -484,17 +498,26 @@ Respond ONLY in JSON format: {{"engine_response": "string", "system_state": {{"v
         ai_reply = res_data.get("engine_response", "Reflecting.")
         print(f"[CALL OUT] Mirror replied: {ai_reply}")
 
-        # 6. Log to Database so the text-brain remembers the voice call
+        final_v = float(res_data.get("system_state", {}).get("valence", v))
+        final_a = float(res_data.get("system_state", {}).get("arousal", a))
+
+        # 7. 🛡️ EKV LOGGING FIX: Maintain the ring and write JSON to database
+        ring = ekv_state.get("ring", [])
+        ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
+        if len(ring) > EKV_CAPACITY: ring.pop(0)
+
+        # 8. Log to Database so the text-brain remembers the voice call
         supabase.table("interactions").insert({
             "user_id": user_id, "message": f"[VOICE] {user_text}", "response": f"[VOICE] {ai_reply}",
-            "valence": res_data.get("system_state", {}).get("valence", v), 
-            "arousal": res_data.get("system_state", {}).get("arousal", a)
+            "valence": final_v, 
+            "arousal": final_a,
+            "ekv_state": {"capacity": EKV_CAPACITY, "ring": ring, "metrics": ekv_state.get("metrics", {})}
         }).execute()
 
-        # 7. Generate Lifelike Voice Audio Bytes
+        # 9. Generate Lifelike Voice Audio Bytes
         out_audio_bytes = await generate_speech_cloud(ai_reply)
 
-        # 8. Send audio to Kotlin & Handle UI Drop
+        # 10. Send audio to Kotlin & Handle UI Drop
         call_status = "terminated" if is_hanging_up else "active"
         
         return Response(
