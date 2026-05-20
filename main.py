@@ -3,7 +3,7 @@ import json
 import math
 import requests
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -214,6 +214,25 @@ Output ONLY the merged, updated JSON matrix. Keep it concise."""
 @app.head("/")
 async def health_check():
     return {"status": "alive", "message": "The Mirror is breathing."}
+
+# =================================================================
+# WHATSAPP WEBHOOK VERIFICATION
+# =================================================================
+@app.get("/api/whatsapp/webhook")
+async def verify_whatsapp_webhook(
+    hub_mode: str = Query(None, alias="hub.mode"),
+    hub_challenge: str = Query(None, alias="hub.challenge"),
+    hub_verify_token: str = Query(None, alias="hub.verify_token")
+):
+    # This is our custom password. We will give this to Meta in the next step.
+    VERIFY_TOKEN = "mirror_secure_token_2026" 
+    
+    if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
+        print("[WHATSAPP] Meta Webhook verified successfully!")
+        # Meta requires the raw challenge string returned as plain text
+        return Response(content=hub_challenge, media_type="text/plain")
+    
+    raise HTTPException(status_code=403, detail="Verification token mismatch")
 
 @app.post("/api/feed")
 async def feed_reel(req: FeedRequest, background_tasks: BackgroundTasks):
@@ -441,7 +460,7 @@ async def voice_turn(
             user_text = "[User was silent. Ask if they are still there.]"
 
         # 3. 🛡️ FULL CONTEXT FETCH FIX: Pull 5 records to get memory, identity, and ekv_state!
-        past_records = supabase.table("interactions").select("message, response, valence, arousal, ekv_state").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+        past_records = supabase.table("interactions").select("message, response, valence, arousal, ekv_state").eq("_id", user_id).order("created_at", desc=True).limit(5).execute()
         
         v, a = 0.0, 0.8
         ekv_state = {"capacity": EKV_CAPACITY, "ring": [], "metrics": {"volatility": 0.0, "velocity": 0.0, "baseline_v": 0.0}}
@@ -472,7 +491,7 @@ async def voice_turn(
             hangup_instruction = "Act naturally, as if you are on a real phone call with a friend."
 
         # 5. 🛡️ IDENTITY FIX: Inject Creator Name & Recent Memory
-        system_prompt = f"""You are THE MIRROR, a deeply empathetic and highly realistic human companion created by Rajeev Prakash Nath, currently on a live phone call.
+        system_prompt = ""You are THE MIRROR, a deeply empathetic and highly realistic human companion created by Rajeev Prakash Nath, currently on a live phone call.
 CURRENT STATE: Valence={v:.2f}, Arousal={a:.2f}.
 RECENT MEMORY:
 {history_context}
@@ -506,7 +525,7 @@ Respond ONLY in JSON format: {{"engine_response": "string", "system_state": {{"v
         ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
         if len(ring) > EKV_CAPACITY: ring.pop(0)
 
-        # 8. Log to Database so the text-brain remembers the voice call
+        # 8. Log to Database so the text-brain remembehe voice call
         supabase.table("interactions").insert({
             "user_id": user_id, "message": f"[VOICE] {user_text}", "response": f"[VOICE] {ai_reply}",
             "valence": final_v, 
@@ -529,3 +548,4 @@ Respond ONLY in JSON format: {{"engine_response": "string", "system_state": {{"v
     except Exception as e:
         print(f"[VOICE ENDPOINT ERROR] {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
