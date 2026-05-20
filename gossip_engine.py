@@ -104,7 +104,7 @@ def generate_gossip_catalyst(topic, web_snippet, mutated_prompt, video_link=None
         messages=[{"role": "system", "content": system_instruction}],
         model="llama-3.3-70b-versatile",
         temperature=0.7,
-        max_tokens=100
+        max_tokens=250 # 🛡️ THE FIX: Increased from 100 so the URL doesn't get cut off!
     )
     return completion.choices[0].message.content.strip()
 
@@ -134,9 +134,8 @@ def execute_catalyst_event(supabase_client, user_id):
         if not web_snippet:
             web_snippet = f"I was just thinking about {best_topic}."
 
-        # 5. Dice Roll (50/50 chance to hunt for a YouTube video)
-        send_video = random.choice([True, False])
-        video_link = fetch_youtube_link(best_topic) if send_video else None
+        # 5. 🛡️ THE FIX: Always hunt for a video to enrich the push notification
+        video_link = fetch_youtube_link(best_topic)
 
         # 6. Generate the final text message
         gossip_msg = generate_gossip_catalyst(best_topic, web_snippet, user_data.get("mutated_prompt", ""), video_link)

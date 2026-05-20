@@ -90,7 +90,7 @@ try:
     # The ONNX encoder runs locally with extremely low memory footprint
     encoder = FastEmbedEncoder(name="BAAI/bge-small-en-v1.5")
     
-    # THE FIX: Support for newer versions explicitly syncing the index with the new chitchat route added
+    # Support for newer versions explicitly syncing the index with the new chitchat route added
     try:
         router_layer = RouteLayer(encoder=encoder, routes=[live_search_route, chitchat_route], auto_sync="local")
     except TypeError:
@@ -396,7 +396,7 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
 
         send_instant_vibration(req.user_id, engine_res)
         
-        # THE FIX: Threading call to update_cognitive_ledger REMOVED. 
+        # Threading call to update_cognitive_ledger REMOVED. 
         # proactive.py will now handle this entirely off-thread in the Dream State.
 
         return {"engine_response": engine_res, "system_state": {"valence": final_v, "arousal": final_a}}

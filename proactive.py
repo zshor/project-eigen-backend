@@ -92,7 +92,7 @@ def evaluate_soul():
             update_cognitive_ledger(supabase, user_id, memory_transcript)
 
         # =================================================================
-        # THE COGNITIVE BATTERY DRAIN (10% PER HOUR)
+        # THE COGNITIVE BATTERY DRAIN (FIXED FOR 1-WEEK BATTERY LIFE)
         # =================================================================
         cog_state_res = supabase.table("user_cognitive_state").select("*").eq("user_id", user_id).execute()
         cog_state = cog_state_res.data[0] if cog_state_res.data else {}
@@ -104,8 +104,8 @@ def evaluate_soul():
             last_fed_time = parser.isoparse(last_fed_str)
             hours_since_fed = (datetime.now(timezone.utc) - last_fed_time).total_seconds() / 3600
             
-            # Drain Logic: Lose 10% battery for every 1 hour unfed
-            drain_amount = int(hours_since_fed * 10) 
+            # 🛡️ THE FIX: 0.5 drain per hour = 1% every 2 hours. Lasts ~8.3 days.
+            drain_amount = int(hours_since_fed * 0.5) 
             new_battery = max(0, 100 - drain_amount)
             
             # Save the drained state back to the database
@@ -141,9 +141,10 @@ def evaluate_soul():
                 print(f"  -> [WARNING] Gossip Engine failed: {e}")
 
         # =================================================================
-        # 2. SECONDARY: EMOTIONAL FALLBACKS (ONLY IF NOT IN GOSSIP MODE)
+        # 2. SECONDARY: EMOTIONAL FALLBACKS (ONLY IF GOSSIP FAILED)
         # =================================================================
-        if not trigger_type and hours_since > dynamic_threshold and not is_gossip_mode:
+        # 🛡️ THE FIX: Removed "not is_gossip_mode" block. If whisper is None, fire fallback!
+        if not whisper and hours_since > dynamic_threshold:
             if v <= -0.8:
                 trigger_type = "acute_distress"
             elif v >= 0.7:
