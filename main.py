@@ -356,16 +356,7 @@ Respond ONLY in this exact JSON format: {{"engine_response": "string", "system_s
             # =================================================================
             # REFLECTION MODE (Strictly Isolated to MODEL_CHAT)
             # =================================================================
-            system_prompt = f"""You are THE MIRROR, a deeply empathetic digital twin created by Rajeev Prakash Nath.
-CURRENT DATE: {current_date_str}
-RECENT MEMORY: {history_context}
-CURRENT STATE: Valence={decayed_v:.2f} (negative is sad, positive is happy), Arousal={decayed_a:.2f} (low is calm, high is energetic).
-
-DIRECTIVE:
-1. Respond casually, warmly, and with deep emotional intelligence. Keep it under 50 words.
-2. Read my underlying emotion. Do not just repeat what I say. Offer insight, comfort, or shared excitement based on the V and A state.
-3. Never act like an AI bot. You are a living reflection of me.
-Respond ONLY in this JSON format: {{"engine_response": "string", "system_state": {{"valence": float, "arousal": float}}}}"""
+            system_prompt = f"You are THE MIRROR, a deeply empathetic digital twin created by Rajeev Prakash Nath.\nCURRENT DATE: {current_date_str}\nRECENT MEMORY: {history_context}\nCURRENT STATE: Valence={decayed_v:.2f} (negative is sad, positive is happy), Arousal={decayed_a:.2f} (low is calm, high is energetic).\n\nDIRECTIVE:\n1. Respond casually, warmly, and with deep emotional intelligence. Keep it under 50 words.\n2. Read my underlying emotion. Do not just repeat what I say. Offer insight, comfort, or shared excitement based on the V and A state.\n3. Never act like an AI bot. You are a living reflection of me.\nRespond ONLY in this JSON format: {{\"engine_response\": \"string\", \"system_state\": {{\"valence\": float, \"arousal\": float}}}}"
             
             try:
                 # USING THE 70B MODEL STRICTLY FOR DEEP EMPATHY
@@ -415,9 +406,6 @@ Respond ONLY in this JSON format: {{"engine_response": "string", "system_state":
 
         send_instant_vibration(req.user_id, engine_res)
         
-        # Threading call to update_cognitive_ledger REMOVED. 
-        # proactive.py will now handle this entirely off-thread in the Dream State.
-
         return {"engine_response": engine_res, "system_state": {"valence": final_v, "arousal": final_a}}
 
     except Exception as e:
@@ -460,7 +448,7 @@ async def voice_turn(
             user_text = "[User was silent. Ask if they are still there.]"
 
         # 3. 🛡️ FULL CONTEXT FETCH FIX: Pull 5 records to get memory, identity, and ekv_state!
-        past_records = supabase.table("interactions").select("message, response, valence, arousal, ekv_state").eq("_id", user_id).order("created_at", desc=True).limit(5).execute()
+        past_records = supabase.table("interactions").select("message, response, valence, arousal, ekv_state").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
         
         v, a = 0.0, 0.8
         ekv_state = {"capacity": EKV_CAPACITY, "ring": [], "metrics": {"volatility": 0.0, "velocity": 0.0, "baseline_v": 0.0}}
@@ -491,7 +479,7 @@ async def voice_turn(
             hangup_instruction = "Act naturally, as if you are on a real phone call with a friend."
 
         # 5. 🛡️ IDENTITY FIX: Inject Creator Name & Recent Memory
-        system_prompt = ""You are THE MIRROR, a deeply empathetic and highly realistic human companion created by Rajeev Prakash Nath, currently on a live phone call.
+        system_prompt = f"""You are THE MIRROR, a deeply empathetic and highly realistic human companion created by Rajeev Prakash Nath, currently on a live phone call.
 CURRENT STATE: Valence={v:.2f}, Arousal={a:.2f}.
 RECENT MEMORY:
 {history_context}
@@ -525,7 +513,7 @@ Respond ONLY in JSON format: {{"engine_response": "string", "system_state": {{"v
         ring.append({"v": final_v, "a": final_a, "timestamp": datetime.now(timezone.utc).isoformat()})
         if len(ring) > EKV_CAPACITY: ring.pop(0)
 
-        # 8. Log to Database so the text-brain remembehe voice call
+        # 8. Log to Database so the text-brain remembers the voice call
         supabase.table("interactions").insert({
             "user_id": user_id, "message": f"[VOICE] {user_text}", "response": f"[VOICE] {ai_reply}",
             "valence": final_v, 
@@ -548,4 +536,3 @@ Respond ONLY in JSON format: {{"engine_response": "string", "system_state": {{"v
     except Exception as e:
         print(f"[VOICE ENDPOINT ERROR] {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
